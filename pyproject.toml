@@ -1,0 +1,49 @@
+[project]
+name = "inductiveclaw"
+version = "0.1.0"
+description = "Autonomous iterative coding agent — builds until the vibe is right"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Andy Phu" },
+]
+keywords = ["ai", "agent", "autonomous", "claude", "coding", "iterative"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Code Generators",
+    "Typing :: Typed",
+]
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+    "anyio>=4.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+screenshot = ["playwright>=1.40"]
+
+[project.urls]
+Homepage = "https://github.com/andyphu/inductiveclaw"
+Repository = "https://github.com/andyphu/inductiveclaw"
+Issues = "https://github.com/andyphu/inductiveclaw/issues"
+
+[project.scripts]
+iclaw = "inductiveclaw.__main__:main"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["INDUCTIVECLAW_BUILD_PROMPT.md"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
