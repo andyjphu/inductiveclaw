@@ -35,6 +35,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     vis.add_argument("--port", type=int, default=3000, help="Dev server port (default: 3000)")
     vis.add_argument("--dev-cmd", default=None, help="Dev server command (auto-detected if omitted)")
 
+    inter = parser.add_argument_group("interactive mode")
+    inter.add_argument("--no-auto", action="store_true", help="Disable auto-continue (agent stops after each turn)")
+
     out = parser.add_argument_group("output")
     out.add_argument("-q", "--quiet", action="store_true", help="Minimal output")
     out.add_argument("-v", "--verbose", action="store_true", help="Full agent output")
@@ -61,6 +64,32 @@ def _ensure_provider(registry: ProviderRegistry) -> bool:
 
     # Need setup
     return False
+
+
+def _warn_no_sandbox(cwd: str) -> None:
+    """Warn user that no sandbox directory is set and cwd will be used."""
+    from pathlib import Path
+    resolved = Path(cwd).resolve()
+
+    # Count files that could be affected
+    files = list(resolved.rglob("*"))
+    file_count = sum(1 for f in files if f.is_file())
+    dirs = [d for d in resolved.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    dir_names = ", ".join(sorted(d.name for d in dirs)[:8])
+    if len(dirs) > 8:
+        dir_names += f", ... (+{len(dirs) - 8} more)"
+
+    print(
+        f"\033[33m"
+        f"  Warning: No sandbox directory set (--project / -p flag).\n"
+        f"  Agent will use current directory as sandbox: {resolved}\n"
+        f"  Potentially affected: {file_count} files"
+        + (f" in [{dir_names}]" if dir_names else "")
+        + f"\n"
+        f"  To isolate, use: iclaw -p ./sandbox\n"
+        f"\033[0m",
+        file=sys.stderr,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -101,10 +130,19 @@ def main(argv: list[str] | None = None) -> None:
         anyio.run(run, config, registry)
     else:
         # Interactive mode
+        from pathlib import Path
         from .interactive import run_interactive
 
-        cwd = args.project or "."
-        anyio.run(run_interactive, registry, cwd, args.model)
+        if args.project:
+            cwd = args.project
+            Path(cwd).mkdir(parents=True, exist_ok=True)
+        else:
+            cwd = "."
+            _warn_no_sandbox(cwd)
+        try:
+            anyio.run(run_interactive, registry, cwd, args.model, not args.no_auto)
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

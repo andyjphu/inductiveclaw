@@ -56,7 +56,7 @@ def show_banner(config: ClawConfig, registry: ProviderRegistry) -> None:
         print()
 
 
-def show_banner_interactive(registry: ProviderRegistry) -> None:
+def show_banner_interactive(registry: ProviderRegistry, sandbox_path: str | None = None) -> None:
     provider = registry.active
     provider_name = provider.display_name if provider else "none"
     auth_line = provider.status_line() if provider else "not configured"
@@ -64,12 +64,16 @@ def show_banner_interactive(registry: ProviderRegistry) -> None:
     if _has_rich:
         console.print(Text(BANNER, style="bold cyan"))
         console.print(f"  [bold]Provider:[/] {provider_name} — {auth_line}")
+        if sandbox_path:
+            console.print(f"  [bold]Sandbox:[/] {sandbox_path}")
         if registry.cycle_enabled:
             console.print(f"  [bold]Cycling:[/] enabled")
         console.print(f"\n  Type [bold cyan]/help[/] for commands, [bold cyan]/quit[/] to exit.\n")
     else:
         print(BANNER)
         print(f"  Provider: {provider_name} — {auth_line}")
+        if sandbox_path:
+            print(f"  Sandbox: {sandbox_path}")
         print(f"\n  Type /help for commands, /quit to exit.\n")
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from importlib.resources import files
@@ -68,15 +69,17 @@ _FILE_ALL_TOOLS = _FILE_WRITE_TOOLS | _FILE_READ_TOOLS | {"Glob", "Grep"}
 
 
 def _make_sandbox_guard(project_dir: str):
-    """Create a can_use_tool callback that restricts all file access to project_dir."""
+    """Create a can_use_tool callback that enforces sandbox boundaries.
+
+    Simple rule: everything must stay inside project_dir. No exceptions.
+    """
     resolved = Path(project_dir).resolve()
     resolved_str = str(resolved)
 
-    def _path_in_sandbox(p: str) -> bool:
+    def _in_sandbox(p: str) -> bool:
         try:
-            target = Path(p).resolve()
-            target_str = str(target)
-            return target_str == resolved_str or target_str.startswith(resolved_str + os.sep)
+            target = str(Path(p).resolve())
+            return target == resolved_str or target.startswith(resolved_str + os.sep)
         except (ValueError, OSError):
             return False
 
@@ -86,47 +89,158 @@ def _make_sandbox_guard(project_dir: str):
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
 
+        # --- File tools: must be inside sandbox ---
         if tool_name in _FILE_WRITE_TOOLS | _FILE_READ_TOOLS:
             file_path = tool_input.get("file_path", "")
-            if file_path and not _path_in_sandbox(file_path):
+            if file_path and not _in_sandbox(file_path):
                 return PermissionResultDeny(
                     behavior="deny",
                     message=f"Sandbox: {tool_name} blocked — {file_path} "
-                            f"is outside {project_dir}",
+                            f"is outside sandbox ({project_dir})",
                 )
 
         if tool_name in ("Glob", "Grep"):
             search_path = tool_input.get("path", "")
-            if search_path and not _path_in_sandbox(search_path):
+            if search_path and not _in_sandbox(search_path):
                 return PermissionResultDeny(
                     behavior="deny",
                     message=f"Sandbox: {tool_name} blocked — {search_path} "
-                            f"is outside {project_dir}",
+                            f"is outside sandbox ({project_dir})",
                 )
 
+        # --- Bash: no sudo, no absolute paths outside sandbox, no parent traversal ---
         if tool_name == "Bash":
             cmd = tool_input.get("command", "").strip()
-            words = cmd.split()
-            if not words:
+            if not cmd:
                 return PermissionResultAllow(behavior="allow")
 
-            if words[0] == "sudo" or "sudo " in cmd:
+            if "sudo" in cmd.split():
                 return PermissionResultDeny(
                     behavior="deny",
                     message="Sandbox: sudo is not allowed",
                 )
 
-            for word in words[1:]:
-                if word.startswith("/") and not _path_in_sandbox(word):
+            # Block parent directory traversal
+            if ".." in cmd:
+                return PermissionResultDeny(
+                    behavior="deny",
+                    message="Sandbox: parent directory traversal (..) is not allowed",
+                )
+
+            # Block absolute paths outside sandbox
+            for word in cmd.split():
+                if word.startswith("/") and not _in_sandbox(word):
                     return PermissionResultDeny(
                         behavior="deny",
-                        message=f"Sandbox: Bash blocked — references path {word} "
-                                f"outside {project_dir}",
+                        message=f"Sandbox: Bash blocked — {word} is outside sandbox",
                     )
 
         return PermissionResultAllow(behavior="allow")
 
     return guard
+
+
+def _write_sandbox_settings(project_dir: str) -> None:
+    """Write a .claude/settings.json in the project directory to enforce sandbox.
+
+    This is critical because the OS-level sandbox only restricts Bash commands.
+    Write/Edit/Read/Glob/Grep are handled by Claude Code's permission system.
+    The can_use_tool callback only applies to the main process — sub-agents
+    (Agent tool) spawn separate CLI processes that don't inherit our callback.
+    The .claude/settings.json is read by ALL CLI processes including sub-agents.
+    """
+    claude_dir = Path(project_dir) / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = claude_dir / "settings.json"
+
+    # Simple rule: agent can ONLY operate inside the sandbox directory.
+    # No access to iclaw source, no parent dirs, nothing outside.
+    #
+    # Claude Code permission rule syntax:
+    #   //path  = absolute filesystem path (// prefix, NOT triple slash)
+    #   ../path = parent directory traversal
+    #   path    = relative to cwd (sandbox dir)
+    #   * does NOT match / in Bash rules
+    #   deny evaluates before allow; first match wins.
+    #
+    # NOTE: Sub-agent permission inheritance from settings.json is buggy
+    # (known issues: #22665, #18950, #10906). We layer CLAUDE.md instructions
+    # as defense-in-depth.
+    resolved_str = str(Path(project_dir).resolve())
+    settings = {
+        "permissions": {
+            "deny": [
+                # Block all absolute path access (// prefix = absolute path)
+                "Read(//**)",
+                "Edit(//**)",
+                "Write(//**)",
+                # Block parent directory traversal
+                "Read(../**)",
+                "Edit(../**)",
+                "Write(../**)",
+                # Block Bash parent traversal and absolute paths
+                # (note: * does NOT match / in Bash rules)
+                "Bash(cd ..*)",
+                "Bash(cat ..*)",
+                "Bash(ls ..*)",
+                "Bash(find ..*)",
+                "Bash(rm ..*)",
+                "Bash(cp ..*)",
+                "Bash(mv ..*)",
+                "Bash(* ../*)",
+                "Bash(sudo *)",
+            ],
+            "allow": [
+                # Allow sandbox absolute path explicitly (so deny // doesn't block it)
+                # // prefix means "absolute path from root", so //Users/... matches /Users/...
+                # resolved_str starts with /, so strip it to avoid triple slash
+                f"Read(//{resolved_str.lstrip('/')}/**)",
+                f"Edit(//{resolved_str.lstrip('/')}/**)",
+                f"Write(//{resolved_str.lstrip('/')}/**)",
+                # Allow relative paths (within cwd = sandbox)
+                "Bash(*)",
+                "Read(**)",
+                "Edit(**)",
+                "Write(**)",
+                "Glob(**)",
+                "Grep(**)",
+            ],
+        },
+    }
+
+    # Only write if settings don't exist or differ
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+            if existing == settings:
+                return
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+
+    # Also write a CLAUDE.md that sub-agents read automatically.
+    # This is critical because settings.json inheritance is buggy for sub-agents.
+    claude_md = Path(project_dir) / "CLAUDE.md"
+    sandbox_rules = (
+        f"# Sandbox Rules\n\n"
+        f"You are running inside a sandboxed InductiveClaw session.\n\n"
+        f"**CRITICAL: ALL file operations MUST stay within this directory:**\n"
+        f"`{resolved_str}`\n\n"
+        f"- NEVER read, write, edit, or create files outside this directory\n"
+        f"- NEVER use absolute paths (like /Users/...) — use relative paths only\n"
+        f"- NEVER use `..` to access parent directories\n"
+        f"- NEVER use `sudo` or modify system files\n"
+        f"- NEVER run `find`, `ls`, `cat`, or any command on paths outside this directory\n"
+        f"- Install dependencies locally (npm install, pip install in a venv)\n"
+        f"- If you need to explore, explore WITHIN this directory only\n"
+    )
+    if not claude_md.exists() or "Sandbox Rules" not in claude_md.read_text():
+        if claude_md.exists():
+            existing = claude_md.read_text()
+            claude_md.write_text(sandbox_rules + "\n" + existing)
+        else:
+            claude_md.write_text(sandbox_rules)
 
 
 def _clear_screen() -> None:
@@ -326,15 +440,17 @@ def _print_help() -> None:
 
 # --- Input with prompt_toolkit ---
 
-def _bottom_toolbar(registry: ProviderRegistry, cost: float, turns: int) -> str:
+def _bottom_toolbar(registry: ProviderRegistry, cost: float, turns: int, sandbox_path: str = "") -> str:
     provider = registry.active
     name = provider.display_name if provider else "none"
     cost_str = f"${cost:.4f}" if cost > 0 else "$0"
-    return f"  ⏵⏵ sandbox on  |  {name}  |  {cost_str} · {turns} turns  |  /help for commands"
+    # Show abbreviated sandbox path
+    short_path = sandbox_path.replace(str(Path.home()), "~") if sandbox_path else "on"
+    return f"  ⏵⏵ sandbox: {short_path}  |  {name}  |  {cost_str} · {turns} turns  |  /help for commands"
 
 
 _PT_STYLE = PTStyle.from_dict({
-    "bottom-toolbar": "noinherit dim",
+    "bottom-toolbar": "noinherit #666666",
 })
 
 
@@ -342,13 +458,14 @@ def _build_session(
     registry: ProviderRegistry,
     cost_ref: list[float],
     turns_ref: list[int],
+    sandbox_path: str = "",
 ) -> PromptSession:
     completer = WordCompleter(list(SLASH_COMMANDS.keys()), sentence=True)
     return PromptSession(
         history=InMemoryHistory(),
         completer=completer,
         complete_while_typing=False,
-        bottom_toolbar=lambda: _bottom_toolbar(registry, cost_ref[0], turns_ref[0]),
+        bottom_toolbar=lambda: _bottom_toolbar(registry, cost_ref[0], turns_ref[0], sandbox_path),
         style=_PT_STYLE,
     )
 
@@ -362,12 +479,16 @@ def _build_options(
 
     sandbox: SandboxSettings = {
         "enabled": True,
-        "autoAllowBashIfSandboxed": True,
+        # CRITICAL: autoAllowBashIfSandboxed=True bypasses can_use_tool for Bash.
+        # We need can_use_tool to enforce sandbox boundaries, so keep this False.
+        "autoAllowBashIfSandboxed": False,
         "allowUnsandboxedCommands": False,
     }
 
     opts = ClaudeAgentOptions(
-        allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+        # Do NOT put tools in allowed_tools — that pre-approves them and
+        # bypasses can_use_tool. Our callback handles all permission decisions.
+        allowed_tools=[],
         cwd=cwd,
         add_dirs=[cwd],
         system_prompt=_INTERACTIVE_PROMPT,
@@ -386,9 +507,13 @@ async def run_interactive(
     registry: ProviderRegistry,
     cwd: str = ".",
     model_override: str | None = None,
+    auto_continue: bool = True,
 ) -> None:
     """Main interactive REPL loop with Claude Code-style UX."""
     cwd = str(Path(cwd).resolve())
+    # Ensure sandbox directory exists and has restrictive Claude settings
+    Path(cwd).mkdir(parents=True, exist_ok=True)
+    _write_sandbox_settings(cwd)
     cost_ref = [0.0]
     turns_ref = [0]
     # Track session ID so we can resume after Ctrl+C kills the CLI process.
@@ -399,7 +524,7 @@ async def run_interactive(
     if model_override:
         options.model = model_override
 
-    session = _build_session(registry, cost_ref, turns_ref)
+    session = _build_session(registry, cost_ref, turns_ref, cwd)
 
     _clear_screen()
     console.print(Text("  Starting iclaw...\n", style="dim"))
@@ -416,7 +541,7 @@ async def run_interactive(
                 async with ClaudeSDKClient(options=options) as client:
                     if first_connect:
                         _clear_screen()
-                        display.show_banner_interactive(registry)
+                        display.show_banner_interactive(registry, cwd)
                         first_connect = False
 
                     while True:
@@ -457,13 +582,40 @@ async def run_interactive(
                             session_id_ref[0] = None
                             options.resume = None
                             _clear_screen()
-                            display.show_banner_interactive(registry)
+                            display.show_banner_interactive(registry, cwd)
                             break  # recreate client without resume
 
-                        # Send to agent
+                        # Send to agent and auto-continue until interrupted
                         try:
                             await client.query(user_input)
-                            await _run_agent_turn(client, cost_ref, turns_ref, session_id_ref)
+                            stop = await _run_agent_turn(client, cost_ref, turns_ref, session_id_ref)
+
+                            # Auto-continue: if agent stopped normally, push it
+                            # to keep building. This enforces "never stop early."
+                            while auto_continue and stop == "end_turn":
+                                console.print(Text(
+                                    "  ↻ continuing...",
+                                    style="dim cyan",
+                                ))
+                                await client.query(
+                                    "Continue building. Do NOT stop. Do NOT re-explore the "
+                                    "codebase from scratch — you already know the project "
+                                    "structure from previous turns.\n\n"
+                                    "BEFORE picking your next feature, do a quick WebSearch: "
+                                    "\"top 10 ways to improve a [your project type]\" or "
+                                    "\"[your project type] features users love\". Find fresh "
+                                    "inspiration from real-world examples. Save findings to "
+                                    "docs/research/. Think long-term: what features will make "
+                                    "this project amazing 10 iterations from now?\n\n"
+                                    "If you've done 3-4 features since last checkpoint, do "
+                                    "housekeeping: checkpoint, archive snapshot (appname1.X/ "
+                                    "with run.sh), update README, log mistakes, update "
+                                    "BACKLOG, save all research to docs/. Then continue.\n\n"
+                                    "Remember: use RELATIVE paths only. Stay inside the "
+                                    "sandbox. Do NOT use absolute paths or .. traversal."
+                                )
+                                stop = await _run_agent_turn(client, cost_ref, turns_ref, session_id_ref)
+
                         except (KeyboardInterrupt, asyncio.CancelledError):
                             console.print(Text("\n  ⏹ interrupted", style="bold yellow"))
                             _show_separator()
@@ -527,8 +679,10 @@ async def _run_agent_turn(
     cost_ref: list[float],
     turns_ref: list[int],
     session_id_ref: list[str | None],
-) -> None:
+) -> str | None:
     """Run a single agent turn with live streaming output.
+
+    Returns the stop_reason from ResultMessage (e.g., "end_turn", "max_tokens").
 
     StreamEvent flow (from official docs):
       content_block_start  → new block (text, tool_use, thinking)
@@ -540,6 +694,7 @@ async def _run_agent_turn(
     streaming_text = False  # currently streaming text to stdout
     streamed_text = False   # did we stream text for the current AssistantMessage?
     in_tool = False         # currently inside a tool_use block
+    stop_reason: str | None = None
     spinner = _ThinkingSpinner()
     spinner.start()  # show immediately — model is thinking after receiving query
     saw_tool_result = False  # track when to restart spinner after tool completes
@@ -665,10 +820,12 @@ async def _run_agent_turn(
                 cost_ref[0] += message.total_cost_usd
             if message.num_turns:
                 turns_ref[0] += message.num_turns
+            stop_reason = message.stop_reason
             _show_result_details(message)
 
     spinner.stop()
     _show_separator()
+    return stop_reason
 
 
 def _show_cost(total_cost: float, total_turns: int) -> None:
