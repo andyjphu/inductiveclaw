@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .auth import AuthResult
     from .config import ClawConfig, UsageTracker
+    from .providers import ProviderRegistry
 
 try:
     from rich.console import Console
@@ -29,25 +29,62 @@ BANNER = r"""
 """
 
 
-def show_banner(config: ClawConfig, auth: AuthResult) -> None:
+def show_banner(config: ClawConfig, registry: ProviderRegistry) -> None:
+    provider = registry.active
+    provider_name = provider.display_name if provider else "none"
+    auth_line = provider.status_line() if provider else "not configured"
+
     if _has_rich:
         console.print(Text(BANNER, style="bold cyan"))
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_row("[bold]Goal[/]", config.goal)
         table.add_row("[bold]Project[/]", config.project_dir)
-        table.add_row("[bold]Auth[/]", auth.display_name)
+        table.add_row("[bold]Provider[/]", f"{provider_name} — {auth_line}")
         table.add_row("[bold]Model[/]", config.model or "default")
         table.add_row("[bold]Threshold[/]", f"{config.quality_threshold}/10")
         table.add_row("[bold]Max iterations[/]", str(config.max_iterations))
+        if registry.cycle_enabled:
+            table.add_row("[bold]Cycling[/]", "enabled")
         console.print(Panel(table, title="[bold]Configuration[/]", border_style="cyan"))
         console.print()
     else:
         print(BANNER)
         print(f"Goal: {config.goal}")
         print(f"Project: {config.project_dir}")
-        print(f"Auth: {auth.display_name}")
+        print(f"Provider: {provider_name} — {auth_line}")
         print(f"Threshold: {config.quality_threshold}/10")
         print()
+
+
+def show_banner_interactive(registry: ProviderRegistry) -> None:
+    provider = registry.active
+    provider_name = provider.display_name if provider else "none"
+    auth_line = provider.status_line() if provider else "not configured"
+
+    if _has_rich:
+        console.print(Text(BANNER, style="bold cyan"))
+        console.print(f"  [bold]Provider:[/] {provider_name} — {auth_line}")
+        if registry.cycle_enabled:
+            console.print(f"  [bold]Cycling:[/] enabled")
+        console.print(f"\n  Type [bold cyan]/help[/] for commands, [bold cyan]/quit[/] to exit.\n")
+    else:
+        print(BANNER)
+        print(f"  Provider: {provider_name} — {auth_line}")
+        print(f"\n  Type /help for commands, /quit to exit.\n")
+
+
+def show_interactive_response(text: str) -> None:
+    if _has_rich:
+        console.print(text)
+    else:
+        print(text)
+
+
+def show_interactive_summary(total_cost: float, total_turns: int) -> None:
+    if _has_rich:
+        console.print(f"\n[dim]Session: ${total_cost:.4f} | {total_turns} turns[/]")
+    else:
+        print(f"\nSession: ${total_cost:.4f} | {total_turns} turns")
 
 
 def show_iteration_header(n: int, tracker: UsageTracker) -> None:

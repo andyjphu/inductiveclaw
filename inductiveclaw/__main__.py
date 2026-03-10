@@ -7,10 +7,9 @@ import sys
 
 import anyio
 
-from . import auth
-from .agent import run
-from .auth import AuthError
 from .config import ClawConfig
+from .providers import ProviderRegistry
+from .setup import run_setup
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -19,21 +18,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="InductiveClaw — Autonomous iterative coding agent",
     )
 
-    req = parser.add_argument_group("required")
-    req.add_argument("-g", "--goal", required=True, help="What to build")
+    parser.add_argument("-g", "--goal", default=None, help="What to build (omit for interactive mode)")
+    parser.add_argument("--setup", action="store_true", help="Run guided provider setup")
 
     proj = parser.add_argument_group("project")
-    proj.add_argument("-p", "--project", default="./project", help="Project directory (default: ./project)")
+    proj.add_argument("-p", "--project", default=None, help="Project directory (default: . for interactive, ./project for autonomous)")
     proj.add_argument("-m", "--model", default=None, help="Model override")
 
-    ctrl = parser.add_argument_group("iteration control")
+    ctrl = parser.add_argument_group("iteration control (autonomous mode)")
     ctrl.add_argument("-t", "--threshold", type=int, default=8, help="Quality threshold 1-10 (default: 8)")
     ctrl.add_argument("--max-iterations", type=int, default=100, help="Max outer loop iterations (default: 100)")
     ctrl.add_argument("--eval-frequency", type=int, default=3, help="Evaluate every N iterations (default: 3)")
-
-    auth_grp = parser.add_argument_group("auth")
-    auth_grp.add_argument("--use-api-key", action="store_true", help="Prefer API key over OAuth")
-    auth_grp.add_argument("--api-key", default=None, help="Explicit API key")
 
     vis = parser.add_argument_group("visual")
     vis.add_argument("--no-screenshot", action="store_true", help="Disable screenshot evaluation")
@@ -47,32 +42,69 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _ensure_provider(registry: ProviderRegistry) -> bool:
+    """Ensure at least one provider is configured. Returns True if ready."""
+    # Try loading saved config
+    if registry.load_config():
+        if registry.active and registry.active.is_configured():
+            return True
+
+    # Try auto-detecting Anthropic
+    registry.auto_detect()
+    if registry.configured_providers():
+        # If only one, set it active
+        configured = registry.configured_providers()
+        if len(configured) == 1 and registry.active_id is None:
+            registry.set_active(configured[0].id)
+        if registry.active and registry.active.is_configured():
+            return True
+
+    # Need setup
+    return False
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    registry = ProviderRegistry()
 
-    config = ClawConfig(
-        project_dir=args.project,
-        goal=args.goal,
-        model=args.model,
-        quality_threshold=args.threshold,
-        max_iterations=args.max_iterations,
-        eval_frequency=args.eval_frequency,
-        auto_screenshot=not args.no_screenshot,
-        screenshot_port=args.port,
-        dev_server_cmd=args.dev_cmd,
-        verbose=not args.quiet and args.verbose,
-    )
+    # --setup: run guided setup and exit
+    if args.setup:
+        _ensure_provider(registry)  # load existing config first
+        run_setup(registry)
+        return
 
-    try:
-        auth_result = auth.resolve(
-            prefer_oauth=not args.use_api_key,
-            force_api_key=args.api_key,
+    # Ensure we have a provider
+    if not _ensure_provider(registry):
+        print("No provider configured. Running setup...\n", file=sys.stderr)
+        run_setup(registry)
+        if not registry.active or not registry.active.is_configured():
+            print("Setup incomplete. Run: iclaw --setup", file=sys.stderr)
+            sys.exit(1)
+
+    if args.goal:
+        # Autonomous mode
+        from .agent import run
+
+        project_dir = args.project or "./project"
+        config = ClawConfig(
+            project_dir=project_dir,
+            goal=args.goal,
+            model=args.model,
+            quality_threshold=args.threshold,
+            max_iterations=args.max_iterations,
+            eval_frequency=args.eval_frequency,
+            auto_screenshot=not args.no_screenshot,
+            screenshot_port=args.port,
+            dev_server_cmd=args.dev_cmd,
+            verbose=not args.quiet and args.verbose,
         )
-    except AuthError as e:
-        print(f"Authentication failed:\n{e}", file=sys.stderr)
-        sys.exit(1)
+        anyio.run(run, config, registry)
+    else:
+        # Interactive mode
+        from .interactive import run_interactive
 
-    anyio.run(run, config, auth_result)
+        cwd = args.project or "."
+        anyio.run(run_interactive, registry, cwd, args.model)
 
 
 if __name__ == "__main__":

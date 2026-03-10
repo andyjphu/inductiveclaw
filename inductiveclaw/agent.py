@@ -19,9 +19,9 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import TextBlock, ToolUseBlock
 
 from . import display
-from .auth import AuthResult
 from .config import ClawConfig, UsageTracker
 from .prompts import SYSTEM_PROMPT, build_iteration_prompt
+from .providers import ProviderRegistry, ProviderStatus
 from .tools import create_iclaw_tools
 
 MAX_CONSECUTIVE_ERRORS = 3
@@ -37,8 +37,12 @@ class IterationResult:
 def _build_sdk_options(
     config: ClawConfig,
     tools_server: object,
-    auth_result: AuthResult,
+    registry: ProviderRegistry,
 ) -> ClaudeAgentOptions:
+    provider = registry.active
+    assert provider is not None
+
+    project_dir = str(Path(config.project_dir).resolve())
     opts = ClaudeAgentOptions(
         allowed_tools=[
             "Bash", "Read", "Write", "Edit", "Glob", "Grep",
@@ -48,14 +52,17 @@ def _build_sdk_options(
             "mcp__iclaw-tools__write_docs",
         ],
         permission_mode="bypassPermissions",
-        cwd=str(Path(config.project_dir).resolve()),
+        cwd=project_dir,
+        add_dirs=[project_dir],
         max_turns=config.max_turns_per_iteration,
         mcp_servers={"iclaw-tools": tools_server},
         system_prompt=SYSTEM_PROMPT,
-        env=auth_result.get_sdk_env(),
+        env=provider.get_sdk_env(),
     )
-    if config.model:
-        opts.model = config.model
+    # Model: config override > provider default
+    model = config.model or provider.get_model()
+    if model:
+        opts.model = model
     return opts
 
 
@@ -119,12 +126,12 @@ def _extract_iteration_results(config: ClawConfig, tracker: UsageTracker) -> Ite
     return result
 
 
-async def run(config: ClawConfig, auth_result: AuthResult) -> None:
+async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
     """Main autonomous loop."""
     tracker = UsageTracker()
     tools_server = create_iclaw_tools(config)
 
-    display.show_banner(config, auth_result)
+    display.show_banner(config, registry)
 
     Path(config.project_dir).mkdir(parents=True, exist_ok=True)
 
@@ -147,7 +154,7 @@ async def run(config: ClawConfig, auth_result: AuthResult) -> None:
             display.show_iteration_header(iteration, tracker)
 
             prompt = build_iteration_prompt(config, iteration, tracker)
-            options = _build_sdk_options(config, tools_server, auth_result)
+            options = _build_sdk_options(config, tools_server, registry)
 
             try:
                 result = await _run_single_iteration(
@@ -163,23 +170,39 @@ async def run(config: ClawConfig, auth_result: AuthResult) -> None:
                     Exception("Claude Code CLI not found. Install it: npm install -g @anthropic-ai/claude-code"),
                 )
                 break
-            except CLIConnectionError as e:
+            except (CLIConnectionError, ProcessError) as e:
+                err_str = str(e).lower()
+                if "rate" in err_str and "limit" in err_str:
+                    new_provider = registry.handle_rate_limit()
+                    if new_provider and new_provider.status == ProviderStatus.CONNECTED:
+                        display.show_error(iteration, Exception(
+                            f"Rate limited. Cycling to {new_provider.display_name}..."
+                        ))
+                        continue
+                    else:
+                        display.show_error(iteration, Exception("All providers exhausted."))
+                        break
+
                 consecutive_errors += 1
-                tracker.errors.append(f"Iteration {iteration}: Connection error — {e}")
-                display.show_error(iteration, e)
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    display.show_error(iteration, Exception(f"{MAX_CONSECUTIVE_ERRORS} consecutive errors, stopping."))
-                    break
-                continue
-            except ProcessError as e:
-                consecutive_errors += 1
-                tracker.errors.append(f"Iteration {iteration}: Process error — {e}")
+                tracker.errors.append(f"Iteration {iteration}: {e}")
                 display.show_error(iteration, e)
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                     display.show_error(iteration, Exception(f"{MAX_CONSECUTIVE_ERRORS} consecutive errors, stopping."))
                     break
                 continue
             except Exception as e:
+                err_str = str(e).lower()
+                if "rate" in err_str and "limit" in err_str:
+                    new_provider = registry.handle_rate_limit()
+                    if new_provider and new_provider.status == ProviderStatus.CONNECTED:
+                        display.show_error(iteration, Exception(
+                            f"Rate limited. Cycling to {new_provider.display_name}..."
+                        ))
+                        continue
+                    else:
+                        display.show_error(iteration, Exception("All providers exhausted."))
+                        break
+
                 consecutive_errors += 1
                 tracker.errors.append(f"Iteration {iteration}: {e}")
                 display.show_error(iteration, e)
