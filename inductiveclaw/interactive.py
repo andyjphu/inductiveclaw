@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import select
 import sys
-import termios
 from importlib.resources import files
 from pathlib import Path
 
@@ -18,8 +17,14 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import (
     TextBlock,
+    ThinkingBlock,
     ToolUseBlock,
     ToolResultBlock,
+    StreamEvent,
+    TaskStartedMessage,
+    TaskProgressMessage,
+    TaskNotificationMessage,
+    SystemMessage,
     PermissionResultAllow,
     PermissionResultDeny,
     ToolPermissionContext,
@@ -56,24 +61,17 @@ SLASH_COMMANDS = {
 
 # --- Sandbox enforcement ---
 
-# Tools that take a file_path and can write outside the sandbox
 _FILE_WRITE_TOOLS = {"Write", "Edit"}
 _FILE_READ_TOOLS = {"Read"}
 _FILE_ALL_TOOLS = _FILE_WRITE_TOOLS | _FILE_READ_TOOLS | {"Glob", "Grep"}
 
 
 def _make_sandbox_guard(project_dir: str):
-    """Create a can_use_tool callback that restricts all file access to project_dir.
-
-    Every tool call passes through this gate. The CLI sends permission requests
-    because we don't set bypassPermissions — our callback auto-allows anything
-    inside the sandbox and denies everything outside it.
-    """
+    """Create a can_use_tool callback that restricts all file access to project_dir."""
     resolved = Path(project_dir).resolve()
     resolved_str = str(resolved)
 
     def _path_in_sandbox(p: str) -> bool:
-        """Check if a path is inside the project directory."""
         try:
             target = Path(p).resolve()
             target_str = str(target)
@@ -87,7 +85,6 @@ def _make_sandbox_guard(project_dir: str):
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
 
-        # --- File tools: check file_path ---
         if tool_name in _FILE_WRITE_TOOLS | _FILE_READ_TOOLS:
             file_path = tool_input.get("file_path", "")
             if file_path and not _path_in_sandbox(file_path):
@@ -97,7 +94,6 @@ def _make_sandbox_guard(project_dir: str):
                             f"is outside {project_dir}",
                 )
 
-        # --- Search tools: check path ---
         if tool_name in ("Glob", "Grep"):
             search_path = tool_input.get("path", "")
             if search_path and not _path_in_sandbox(search_path):
@@ -107,24 +103,18 @@ def _make_sandbox_guard(project_dir: str):
                             f"is outside {project_dir}",
                 )
 
-        # --- Bash: block dangerous commands and out-of-sandbox writes ---
         if tool_name == "Bash":
             cmd = tool_input.get("command", "").strip()
             words = cmd.split()
             if not words:
                 return PermissionResultAllow(behavior="allow")
 
-            first = words[0]
-
-            # Hard-block dangerous commands
-            if first == "sudo" or "sudo " in cmd:
+            if words[0] == "sudo" or "sudo " in cmd:
                 return PermissionResultDeny(
                     behavior="deny",
                     message="Sandbox: sudo is not allowed",
                 )
 
-            # Block commands that explicitly target paths outside sandbox
-            # Check for absolute paths in the command that aren't in the sandbox
             for word in words[1:]:
                 if word.startswith("/") and not _path_in_sandbox(word):
                     return PermissionResultDeny(
@@ -133,94 +123,44 @@ def _make_sandbox_guard(project_dir: str):
                                 f"outside {project_dir}",
                     )
 
-        # Everything else: allow
         return PermissionResultAllow(behavior="allow")
 
     return guard
 
 
-# --- Terminal control ---
-
-def _enter_alt_screen() -> None:
-    """Switch to alternate screen buffer (clean slate, restored on exit)."""
-    sys.stdout.write("\033[?1049h\033[H")
+def _clear_screen() -> None:
+    sys.stdout.write("\033[2J\033[H")
     sys.stdout.flush()
 
 
-def _exit_alt_screen() -> None:
-    """Restore the original terminal content."""
-    sys.stdout.write("\033[?1049l")
-    sys.stdout.flush()
+# --- Streaming text accumulator ---
 
+class _StreamAccumulator:
+    """Accumulates streaming text deltas and renders them live."""
 
-def _cursor_row() -> int:
-    """Query the terminal for the current cursor row (1-based)."""
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        new = termios.tcgetattr(fd)
-        new[3] = new[3] & ~(termios.ECHO | termios.ICANON)
-        termios.tcsetattr(fd, termios.TCSANOW, new)
-        # DSR — Device Status Report: terminal replies with \033[row;colR
-        sys.stdout.write("\033[6n")
-        sys.stdout.flush()
-        resp = ""
-        while True:
-            ch = os.read(fd, 1).decode()
-            resp += ch
-            if ch == "R":
-                break
-        # Parse \033[row;colR
-        row = int(resp.split("[")[1].split(";")[0])
-        return row
-    except Exception:
-        return os.get_terminal_size().lines
-    finally:
-        termios.tcsetattr(fd, termios.TCSANOW, old)
+    def __init__(self):
+        self._buffer = ""
+        self._line_count = 0
 
-
-def _pad_to_bottom() -> None:
-    """Push the cursor near the terminal bottom so the prompt sits above the toolbar."""
-    term_height = os.get_terminal_size().lines
-    current_row = _cursor_row()
-    # We want prompt at (term_height - 2): 1 for toolbar, 1 for prompt itself
-    needed = term_height - 2 - current_row
-    if needed > 0:
-        sys.stdout.write("\n" * needed)
+    def feed(self, delta: str) -> None:
+        self._buffer += delta
+        # Print each character as it arrives for live feel
+        sys.stdout.write(delta)
         sys.stdout.flush()
 
-
-def _drain_stdin() -> None:
-    """Discard any pending input (scroll escape sequences, stray keypresses)."""
-    fd = sys.stdin.fileno()
-    while select.select([fd], [], [], 0.0)[0]:
-        os.read(fd, 4096)
-
-
-def _suppress_stdin() -> list | None:
-    """Disable terminal echo and canonical mode during agent work."""
-    fd = sys.stdin.fileno()
-    if not os.isatty(fd):
-        return None
-    old = termios.tcgetattr(fd)
-    new = termios.tcgetattr(fd)
-    new[3] = new[3] & ~(termios.ECHO | termios.ICANON)
-    termios.tcsetattr(fd, termios.TCSANOW, new)
-    return old
-
-
-def _restore_stdin(old: list | None) -> None:
-    """Restore terminal settings saved by _suppress_stdin."""
-    if old is None:
-        return
-    fd = sys.stdin.fileno()
-    termios.tcsetattr(fd, termios.TCSANOW, old)
+    def finish(self) -> str:
+        """Finalize streaming output, return full text."""
+        if self._buffer:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        text = self._buffer
+        self._buffer = ""
+        return text
 
 
 # --- Styled output helpers ---
 
 def _show_tool_use(name: str, input_data: dict) -> None:
-    """Show a tool call in Claude Code style: ⏺ ToolName(summary)"""
     summary = _summarize_tool_input(name, input_data)
     if summary:
         console.print(Text(f"  ⏺ {name}({summary})", style="bold blue"))
@@ -229,7 +169,6 @@ def _show_tool_use(name: str, input_data: dict) -> None:
 
 
 def _summarize_tool_input(name: str, data: dict) -> str:
-    """Extract the most useful one-liner from tool input."""
     if not isinstance(data, dict):
         return ""
     if name == "Bash":
@@ -246,16 +185,24 @@ def _summarize_tool_input(name: str, data: dict) -> str:
     return ""
 
 
+def _show_thinking(text: str) -> None:
+    lines = text.strip().split("\n")
+    preview = lines[0][:120]
+    if len(lines) > 1 or len(lines[0]) > 120:
+        preview += "..."
+    console.print(Text(f"  ✻ {preview}", style="dim italic"))
+
+
 def _show_tool_result(block: ToolResultBlock) -> None:
-    """Show tool result in Claude Code style with ⎿ prefix."""
+    """Show tool result — only errors get detail, success is silent."""
+    if not block.is_error:
+        return
     content = block.content
     if content is None:
         return
-    # content can be a string or list of dicts
     if isinstance(content, str):
         text = content.strip()
     elif isinstance(content, list):
-        # Extract text from content blocks
         parts = []
         for item in content:
             if isinstance(item, dict) and item.get("type") == "text":
@@ -265,17 +212,14 @@ def _show_tool_result(block: ToolResultBlock) -> None:
         return
     if not text:
         return
-    # Truncate long results, show first few lines
     lines = text.split("\n")
-    if len(lines) > 5:
-        lines = lines[:5] + [f"  ... ({len(lines) - 5} more lines)"]
-    style = "red" if block.is_error else "dim"
+    if len(lines) > 3:
+        lines = lines[:3] + [f"  ... ({len(lines) - 3} more lines)"]
     for line in lines:
-        console.print(Text(f"  ⎿  {line}", style=style))
+        console.print(Text(f"  ⎿  {line}", style="red"))
 
 
 def _show_response(text: str) -> None:
-    """Render agent text as markdown."""
     console.print()
     console.print(Markdown(text))
 
@@ -286,6 +230,88 @@ def _show_separator() -> None:
     line = "─" * side + " ▪▪▪ " + "─" * (width - side - 5)
     console.print()
     console.print(Text(line, style="dim"))
+
+
+def _show_task_started(msg: TaskStartedMessage) -> None:
+    desc = msg.description[:80] if msg.description else "sub-agent"
+    task_type = f" ({msg.task_type})" if msg.task_type else ""
+    console.print(Text(f"  ◉ Task started: {desc}{task_type}", style="bold magenta"))
+
+
+def _show_task_progress(msg: TaskProgressMessage) -> None:
+    desc = msg.description[:60] if msg.description else ""
+    tool = f" → {msg.last_tool_name}" if msg.last_tool_name else ""
+    tokens = msg.usage.get("total_tokens", 0) if msg.usage else 0
+    tools_used = msg.usage.get("tool_uses", 0) if msg.usage else 0
+    console.print(Text(
+        f"  ◌ {desc}{tool} [{tools_used} tools, {tokens:,} tokens]",
+        style="dim magenta",
+    ))
+
+
+def _show_task_notification(msg: TaskNotificationMessage) -> None:
+    status_style = {
+        "completed": "green",
+        "failed": "red",
+        "stopped": "yellow",
+    }.get(msg.status, "dim")
+    icon = {"completed": "✓", "failed": "✗", "stopped": "⏹"}.get(msg.status, "●")
+    summary = msg.summary[:100] if msg.summary else msg.status
+    console.print(Text(f"  {icon} Task {msg.status}: {summary}", style=status_style))
+
+
+def _show_assistant_error(error: str) -> None:
+    error_messages = {
+        "authentication_failed": "Authentication failed — check your API key",
+        "billing_error": "Billing error — check your account",
+        "rate_limit": "Rate limited — waiting...",
+        "invalid_request": "Invalid request",
+        "server_error": "Server error — retrying...",
+        "unknown": "Unknown error",
+    }
+    msg = error_messages.get(error, f"Error: {error}")
+    console.print(Text(f"  ⚠ {msg}", style="bold red"))
+
+
+def _show_result_details(msg: ResultMessage) -> None:
+    """Show end-of-turn details from ResultMessage."""
+    parts = []
+    if msg.total_cost_usd:
+        parts.append(f"${msg.total_cost_usd:.4f}")
+    if msg.num_turns:
+        parts.append(f"{msg.num_turns} turns")
+    if msg.duration_api_ms:
+        secs = msg.duration_api_ms / 1000
+        parts.append(f"{secs:.1f}s API")
+    if msg.usage:
+        input_tokens = msg.usage.get("input_tokens", 0)
+        output_tokens = msg.usage.get("output_tokens", 0)
+        if input_tokens or output_tokens:
+            parts.append(f"{input_tokens + output_tokens:,} tokens")
+    if msg.stop_reason and msg.stop_reason != "end_turn":
+        parts.append(f"stopped: {msg.stop_reason}")
+    if msg.is_error:
+        parts.append("⚠ error")
+    if parts:
+        console.print(Text(f"  [{' · '.join(parts)}]", style="dim"))
+
+
+def _handle_stream_event(event: StreamEvent, accum: _StreamAccumulator) -> None:
+    """Process a raw Anthropic stream event for live output."""
+    ev = event.event
+    ev_type = ev.get("type", "")
+
+    if ev_type == "content_block_delta":
+        delta = ev.get("delta", {})
+        delta_type = delta.get("type", "")
+        if delta_type == "text_delta":
+            accum.feed(delta.get("text", ""))
+        elif delta_type == "thinking_delta":
+            # Don't stream thinking — we show a preview from the full block
+            pass
+        elif delta_type == "input_json_delta":
+            # Tool input streaming — skip, we show the full tool_use block
+            pass
 
 
 def _print_help() -> None:
@@ -300,10 +326,11 @@ def _print_help() -> None:
 
 # --- Input with prompt_toolkit ---
 
-def _bottom_toolbar(registry: ProviderRegistry) -> str:
+def _bottom_toolbar(registry: ProviderRegistry, cost: float, turns: int) -> str:
     provider = registry.active
     name = provider.display_name if provider else "none"
-    return f"  ⏵⏵ sandbox on  |  {name}  |  /help for commands"
+    cost_str = f"${cost:.4f}" if cost > 0 else "$0"
+    return f"  ⏵⏵ sandbox on  |  {name}  |  {cost_str} · {turns} turns  |  /help for commands"
 
 
 _PT_STYLE = PTStyle.from_dict({
@@ -311,13 +338,17 @@ _PT_STYLE = PTStyle.from_dict({
 })
 
 
-def _build_session(registry: ProviderRegistry) -> PromptSession:
+def _build_session(
+    registry: ProviderRegistry,
+    cost_ref: list[float],
+    turns_ref: list[int],
+) -> PromptSession:
     completer = WordCompleter(list(SLASH_COMMANDS.keys()), sentence=True)
     return PromptSession(
         history=InMemoryHistory(),
         completer=completer,
         complete_while_typing=False,
-        bottom_toolbar=lambda: _bottom_toolbar(registry),
+        bottom_toolbar=lambda: _bottom_toolbar(registry, cost_ref[0], turns_ref[0]),
         style=_PT_STYLE,
     )
 
@@ -329,9 +360,6 @@ def _build_options(
     provider = registry.active
     assert provider is not None
 
-    # OS-level sandbox (Seatbelt on macOS, bubblewrap on Linux) enforces
-    # filesystem write restrictions at the kernel level. The can_use_tool
-    # callback is a secondary permission layer on top.
     sandbox: SandboxSettings = {
         "enabled": True,
         "autoAllowBashIfSandboxed": True,
@@ -346,6 +374,7 @@ def _build_options(
         env=provider.get_sdk_env(),
         sandbox=sandbox,
         can_use_tool=_make_sandbox_guard(cwd),
+        include_partial_messages=True,
     )
     model = provider.get_model()
     if model:
@@ -360,28 +389,25 @@ async def run_interactive(
 ) -> None:
     """Main interactive REPL loop with Claude Code-style UX."""
     cwd = str(Path(cwd).resolve())
-    total_cost = 0.0
-    total_turns = 0
+    # Mutable refs so the toolbar closure can read live values
+    cost_ref = [0.0]
+    turns_ref = [0]
 
     options = _build_options(registry, cwd)
     if model_override:
         options.model = model_override
 
-    session = _build_session(registry)
+    session = _build_session(registry, cost_ref, turns_ref)
 
-    _enter_alt_screen()
     try:
+        _clear_screen()
         console.print(Text("  Starting iclaw...\n", style="dim"))
 
         async with ClaudeSDKClient(options=options) as client:
-            # Clear the "Starting..." text now that we're connected
-            sys.stdout.write("\033[2J\033[H")
-            sys.stdout.flush()
+            _clear_screen()
             display.show_banner_interactive(registry)
-            _pad_to_bottom()
 
             while True:
-                # Get input via prompt_toolkit (it owns stdin here)
                 try:
                     user_input = await session.prompt_async(
                         HTML("<b>❯</b> "),
@@ -411,39 +437,91 @@ async def run_interactive(
                     _show_status(registry)
                     continue
                 if cmd == "/cost":
-                    _show_cost(total_cost, total_turns)
+                    _show_cost(cost_ref[0], turns_ref[0])
                     continue
                 if cmd == "/clear":
-                    console.print("Starting new session...\n")
-                    break
+                    _clear_screen()
+                    display.show_banner_interactive(registry)
+                    continue
 
-                # Send to agent — suppress stdin to prevent scroll artifacts
-                old_term = _suppress_stdin()
+                # Send to agent
                 try:
                     await client.query(user_input)
-                    console.print(Text("  ✻ thinking...", style="dim cyan"))
+                    shown_thinking = False
+                    accum = _StreamAccumulator()
+                    streaming_text = False
+
                     async for message in client.receive_response():
+                        # --- Token-by-token streaming ---
+                        if isinstance(message, StreamEvent):
+                            if not shown_thinking:
+                                console.print(Text("  ✻ thinking...", style="dim cyan"))
+                                shown_thinking = True
+                            if not streaming_text:
+                                console.print()
+                                sys.stdout.write("  ")
+                                streaming_text = True
+                            _handle_stream_event(message, accum)
+                            continue
+
+                        # If we were streaming text and now got a non-stream message,
+                        # finalize the streamed output
+                        if streaming_text:
+                            accum.finish()
+                            streaming_text = False
+
+                        # --- Full message blocks ---
                         if isinstance(message, AssistantMessage):
+                            # Check for error state on the message
+                            if message.error:
+                                _show_assistant_error(message.error)
+
                             for block in message.content:
-                                if isinstance(block, TextBlock) and block.text.strip():
+                                if isinstance(block, ThinkingBlock) and block.thinking.strip():
+                                    _show_thinking(block.thinking)
+                                    shown_thinking = True
+                                elif isinstance(block, TextBlock) and block.text.strip():
+                                    if not shown_thinking:
+                                        console.print(Text("  ✻ thinking...", style="dim cyan"))
+                                        shown_thinking = True
                                     _show_response(block.text)
                                 elif isinstance(block, ToolUseBlock):
+                                    if not shown_thinking:
+                                        console.print(Text("  ✻ thinking...", style="dim cyan"))
+                                        shown_thinking = True
                                     _show_tool_use(
                                         block.name,
                                         block.input if isinstance(block.input, dict) else {},
                                     )
                                 elif isinstance(block, ToolResultBlock):
                                     _show_tool_result(block)
-                        if isinstance(message, ResultMessage):
+
+                        # --- Task lifecycle (sub-agents) ---
+                        elif isinstance(message, TaskStartedMessage):
+                            _show_task_started(message)
+                        elif isinstance(message, TaskProgressMessage):
+                            _show_task_progress(message)
+                        elif isinstance(message, TaskNotificationMessage):
+                            _show_task_notification(message)
+                        elif isinstance(message, SystemMessage):
+                            # Generic system message — log if interesting
+                            pass
+
+                        # --- Result (end of turn) ---
+                        elif isinstance(message, ResultMessage):
                             if message.total_cost_usd:
-                                total_cost += message.total_cost_usd
+                                cost_ref[0] += message.total_cost_usd
                             if message.num_turns:
-                                total_turns += message.num_turns
+                                turns_ref[0] += message.num_turns
+                            _show_result_details(message)
+
+                    # Finalize any remaining streamed text
+                    if streaming_text:
+                        accum.finish()
 
                     _show_separator()
 
-                except KeyboardInterrupt:
-                    # Ctrl+C during agent work — stop the current turn
+                except (KeyboardInterrupt, asyncio.CancelledError):
                     console.print(Text("\n  ⏹ interrupted", style="bold yellow"))
                     _show_separator()
                 except CLINotFoundError:
@@ -473,18 +551,11 @@ async def run_interactive(
                             return
                     else:
                         console.print(f"\n[red]Error: {e}[/]\n")
-                finally:
-                    # Restore terminal, drain any queued scroll sequences
-                    _restore_stdin(old_term)
-                    _drain_stdin()
-                    _pad_to_bottom()
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
-    finally:
-        _exit_alt_screen()
 
-    display.show_interactive_summary(total_cost, total_turns)
+    display.show_interactive_summary(cost_ref[0], turns_ref[0])
 
 
 def _show_cost(total_cost: float, total_turns: int) -> None:

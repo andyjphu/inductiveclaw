@@ -17,7 +17,14 @@ from claude_agent_sdk import ClaudeSDKClient
 
 # Message types
 from claude_agent_sdk import AssistantMessage, ResultMessage
-from claude_agent_sdk.types import TextBlock, ToolUseBlock
+from claude_agent_sdk.types import TextBlock, ToolUseBlock, ToolResultBlock
+
+# Sandbox and permissions
+from claude_agent_sdk.types import (
+    SandboxSettings,
+    PermissionResultAllow, PermissionResultDeny,
+    ToolPermissionContext,
+)
 
 # Custom tools
 from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -31,9 +38,11 @@ from claude_agent_sdk import CLINotFoundError, CLIConnectionError, ProcessError
 | Field | Value | Purpose |
 |-------|-------|---------|
 | `allowed_tools` | Built-ins + `mcp__iclaw-tools__*` | Auto-approve tools |
-| `permission_mode` | `"bypassPermissions"` | Fully autonomous |
+| `permission_mode` | `"bypassPermissions"` (autonomous) / omitted (interactive) | Permission handling |
+| `sandbox` | `SandboxSettings(enabled=True, ...)` | OS-level sandbox (interactive) |
+| `can_use_tool` | `_make_sandbox_guard(cwd)` | Permission callback (interactive) |
 | `cwd` | Resolved project dir | Working directory |
-| `add_dirs` | `[project_dir]` | Restrict file access to project |
+| `add_dirs` | `[project_dir]` | Context directories |
 | `max_turns` | `config.max_turns_per_iteration` (30) | Cap tool calls per iteration |
 | `mcp_servers` | `{"iclaw-tools": server}` | Custom tool server (autonomous only) |
 | `system_prompt` | Loaded from `.md` file | Agent identity and rules |
@@ -64,6 +73,41 @@ async with ClaudeSDKClient(options=options) as client:
     async for message in client.receive_response():
         ...
 ```
+
+## Sandbox and Permissions
+
+### OS-Level Sandbox
+
+```python
+from claude_agent_sdk.types import SandboxSettings
+
+sandbox: SandboxSettings = {
+    "enabled": True,                    # Seatbelt (macOS) / bubblewrap (Linux)
+    "autoAllowBashIfSandboxed": True,   # Auto-approve Bash (OS constrains it)
+    "allowUnsandboxedCommands": False,   # Block dangerouslyDisableSandbox escape
+}
+opts = ClaudeAgentOptions(sandbox=sandbox, ...)
+```
+
+### `can_use_tool` Callback
+
+```python
+async def guard(tool_name, tool_input, context) -> PermissionResultAllow | PermissionResultDeny:
+    if _path_outside_sandbox(tool_input.get("file_path", "")):
+        return PermissionResultDeny(behavior="deny", message="Outside sandbox")
+    return PermissionResultAllow(behavior="allow")
+
+opts = ClaudeAgentOptions(can_use_tool=guard, ...)
+```
+
+**Critical:** `bypassPermissions` suppresses `can_use_tool`. Don't combine them.
+
+### Message Types for Tool Display
+
+`AssistantMessage.content` can contain `ToolResultBlock`:
+- `tool_use_id: str` — matches the preceding `ToolUseBlock`
+- `content: str | list[dict] | None` — tool output
+- `is_error: bool | None` — whether the tool errored
 
 ## Custom Tool Pattern
 

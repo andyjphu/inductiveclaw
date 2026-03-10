@@ -49,11 +49,23 @@ CLI args → ClawConfig + ProviderRegistry
 ### Interactive mode
 ```
 ProviderRegistry → interactive.run_interactive(registry, cwd)
+  → enter alt screen
   → ClaudeSDKClient(options) as client
     └── while True:
-          input → slash command or client.query(input)
+          prompt_toolkit.prompt_async() → user input
+          → slash command: handle locally
+          → text: client.query(input)
+            → suppress stdin (termios)
+            → stream AssistantMessage blocks:
+                TextBlock → Rich Markdown render
+                ToolUseBlock → ⏺ styled summary
+                ToolResultBlock → ⎿ result display
+            → restore stdin, drain queued sequences
+            → pad to bottom, show separator
+          on Ctrl+C during agent work → interrupt, return to prompt
           on /config → run_setup(registry), restart session
           on rate limit → cycle provider, restart session
+  → exit alt screen (restore terminal)
 ```
 
 ## Key Design Decisions
@@ -69,5 +81,32 @@ Each provider implements `get_sdk_env()` and `get_model()`. The registry handles
 
 **Current limitation:** Only Anthropic is fully functional. The Agent SDK shells out to the `claude` CLI, so OpenAI and Gemini require separate API client implementations (future feature).
 
-### Sandbox
-Both modes pass `add_dirs=[project_dir]` to restrict file access. System prompts instruct: no sudo, no global installs, local deps only.
+### Sandbox (two-layer defense)
+
+Interactive mode uses two enforcement layers:
+
+1. **OS-level sandbox** — `SandboxSettings(enabled=True, autoAllowBashIfSandboxed=True,
+   allowUnsandboxedCommands=False)`. On macOS this uses Apple's Seatbelt (sandbox-exec)
+   for kernel-level filesystem write restrictions. Provider-agnostic — works regardless
+   of which model drives the agent.
+
+2. **`can_use_tool` callback** — In-process permission gate. Blocks file tools targeting
+   paths outside the project dir, blocks Bash with out-of-sandbox absolute paths,
+   blocks `sudo`. Provides friendly error messages.
+
+**Critical:** `bypassPermissions` and `can_use_tool` are mutually exclusive. Interactive
+mode does NOT use `bypassPermissions` so that `can_use_tool` fires. Autonomous mode
+still uses `bypassPermissions` (no `can_use_tool` needed since it's unattended).
+
+System prompts in both modes instruct: no sudo, no global installs, local deps only.
+
+### Interactive UX (Claude Code-style)
+
+Interactive mode uses a layered rendering approach:
+- **prompt_toolkit** — async input with history, tab completion, bottom toolbar
+- **Rich** — markdown rendering, styled tool calls, panels, tables
+- **Alternate screen buffer** — clean launch/exit (terminal content restored)
+- **termios stdin suppression** — prevents scroll escape leakage during agent work
+- **Tool call display** — `⏺ ToolName(summary)` + `⎿  result` (from `ToolResultBlock`)
+
+See `docs/decisions.md` for rationale on each of these choices.

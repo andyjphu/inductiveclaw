@@ -30,20 +30,33 @@ def _subsequent(
 ) -> str:
     context_parts: list[str] = []
 
+    # Progress summary — keep the agent aware of momentum
     if tracker.features_completed:
         recent = tracker.features_completed[-5:]
-        context_parts.append(f"Recently completed: {', '.join(recent)}")
+        context_parts.append(f"Completed so far: {', '.join(recent)}")
 
     if tracker.last_quality_score is not None:
         context_parts.append(f"Last quality score: {tracker.last_quality_score}/10")
         gap = config.quality_threshold - tracker.last_quality_score
         if gap > 0:
-            context_parts.append(f"Need {gap} more points to reach threshold.")
+            context_parts.append(
+                f"Need {gap} more points to reach ship threshold "
+                f"({config.quality_threshold}/10). Focus on the weakest dimension."
+            )
+        else:
+            context_parts.append(
+                "Score meets threshold — focus on completeness and polish."
+            )
 
+    # Surface recent errors so the agent avoids repeating them
     if tracker.errors:
-        recent_errors = tracker.errors[-2:]
-        context_parts.append(f"Recent errors to be aware of: {'; '.join(recent_errors)}")
+        recent_errors = tracker.errors[-3:]
+        context_parts.append(
+            "Recent errors (do NOT retry the same approach):\n"
+            + "\n".join(f"  - {e}" for e in recent_errors)
+        )
 
+    # Eval and screenshot triggers
     if iteration % config.eval_frequency == 0:
         context_parts.append(_EVAL)
 

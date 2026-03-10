@@ -22,6 +22,7 @@ inductiveclaw/
 │   ├── iteration-loop.md       # Outer loop, stop conditions, error handling
 │   ├── sdk-integration.md      # Claude Agent SDK API reference
 │   ├── cli.md                  # CLI flags, slash commands, examples
+│   ├── decisions.md            # Architectural decision records (ADRs)
 │   ├── web.md                  # Landing page architecture (web/ submodule)
 │   ├── for-human.md            # Prompt phrasing guide for faster iterations
 │   └── archive/                # Stale docs kept for reference
@@ -60,9 +61,12 @@ inductiveclaw/
 
 ### Interactive (default: `iclaw`)
 - Uses `ClaudeSDKClient` for multi-turn conversation
+- Claude Code-style UX: alt screen, `❯` prompt, `⏺`/`⎿`/`✻` iconography
+- prompt_toolkit for input (history, tab completion for slash commands)
+- Rich for output (markdown rendering, styled tool calls)
+- OS-level sandbox + `can_use_tool` callback (no `bypassPermissions`)
+- Ctrl+C interrupts agent mid-work, returns to prompt
 - Slash commands: `/help`, `/config`, `/status`, `/cost`, `/clear`, `/quit`
-- No custom MCP tools injected (bare Claude Code-like experience)
-- User can instruct the agent to use specific tools (e.g. "do a web search")
 - cwd defaults to `.` (current directory)
 
 ### Autonomous (`iclaw -g "goal"`)
@@ -89,10 +93,26 @@ inductiveclaw/
 
 ## Sandbox
 
-Both modes restrict the agent to the project directory:
-- `add_dirs=[project_dir]` in `ClaudeAgentOptions`
-- System prompts instruct: no sudo, no global installs, no system file edits
-- Dependencies must be installed locally (venv, npm install, npx, etc.)
+Two-layer defense restricting the agent to the project directory:
+
+1. **OS-level sandbox** (`SandboxSettings` in `ClaudeAgentOptions`):
+   - macOS: Seatbelt (sandbox-exec) — kernel-level filesystem write restrictions
+   - Linux: bubblewrap
+   - `enabled=True`, `autoAllowBashIfSandboxed=True`, `allowUnsandboxedCommands=False`
+   - Writes outside project dir blocked by the OS, even under prompt injection
+
+2. **`can_use_tool` callback** (secondary layer):
+   - Runs in-process, gates every tool call before the OS sandbox
+   - Blocks Write/Edit/Read to paths outside project dir
+   - Blocks Bash commands referencing absolute paths outside project dir
+   - Blocks `sudo`
+   - Provides friendly error messages
+
+**Important:** `bypassPermissions` and `can_use_tool` are mutually exclusive.
+`bypassPermissions` tells the CLI to skip all permission checks, so `can_use_tool`
+never fires. Interactive mode does NOT use `bypassPermissions`.
+
+System prompts also instruct: no sudo, no global installs, local deps only.
 
 ## Coding Conventions
 
@@ -121,7 +141,7 @@ Both modes restrict the agent to the project directory:
 - **SDK:** `claude-agent-sdk` (import as `claude_agent_sdk`)
 - **Tool naming:** `mcp__iclaw-tools__<tool_name>` in `allowed_tools`
 - **Stop condition:** `overall_score >= threshold AND ready_to_ship == True`
-- **Permission mode:** `bypassPermissions` — fully autonomous
+- **Permission mode:** `bypassPermissions` for autonomous mode; omitted for interactive (uses `can_use_tool` + OS sandbox)
 - **Build backend:** `hatchling.build`
 
 ## Development
