@@ -23,6 +23,8 @@ Requires the Claude Code CLI (`npm install -g @anthropic-ai/claude-code`) becaus
 
 InductiveClaw prefers OAuth (your existing Claude Code / Max subscription login) by default, falling back to an API key. OAuth works via the Claude CLI, so you need `claude` installed and `claude login` completed on the machine running `iclaw`.
 
+> Anthropic recently blocked third-party projects from routing Max/Pro subscription OAuth tokens through unofficial API gateways (e.g., OpenCode/OpenClaw). This hit is targeted at redistributed/commercial use, so using `claude login` locally for personal dev remains fine, but running `iclaw` as part of an external product or resale exposes you to the same restrictions that triggered the ban. Keep your usage personal and off public-facing services.
+
 **Option 1 — Max/Pro subscription (recommended):**
 
 ```bash

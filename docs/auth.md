@@ -42,3 +42,5 @@ class AuthResult:
 
 - `--use-api-key` — prefer environment `ANTHROPIC_API_KEY` over OAuth
 - `--api-key KEY` — provide a key directly (not read from env)
+
+> Anthropic now blocks third-party tooling that routes Max/Pro OAuth tokens through unofficial APIs (e.g., OpenCode/OpenClaw). The enforcement is aimed at redistributed/commercial use, so keep `claude login`/`iclaw` usage local and personal to avoid hitting that ban.
