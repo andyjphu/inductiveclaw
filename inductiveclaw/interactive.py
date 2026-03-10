@@ -23,6 +23,7 @@ from claude_agent_sdk.types import (
     PermissionResultAllow,
     PermissionResultDeny,
     ToolPermissionContext,
+    SandboxSettings,
 )
 
 from rich.console import Console
@@ -328,12 +329,22 @@ def _build_options(
     provider = registry.active
     assert provider is not None
 
+    # OS-level sandbox (Seatbelt on macOS, bubblewrap on Linux) enforces
+    # filesystem write restrictions at the kernel level. The can_use_tool
+    # callback is a secondary permission layer on top.
+    sandbox: SandboxSettings = {
+        "enabled": True,
+        "autoAllowBashIfSandboxed": True,
+        "allowUnsandboxedCommands": False,
+    }
+
     opts = ClaudeAgentOptions(
         allowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
         cwd=cwd,
         add_dirs=[cwd],
         system_prompt=_INTERACTIVE_PROMPT,
         env=provider.get_sdk_env(),
+        sandbox=sandbox,
         can_use_tool=_make_sandbox_guard(cwd),
     )
     model = provider.get_model()
