@@ -2,83 +2,87 @@
 
 ## Entry Points
 
-- **Installed:** `iclaw` (via `pyproject.toml` `[project.scripts]`, install with `pip install iclaw`)
+- **Installed:** `iclaw` (via `pyproject.toml [project.scripts]`)
 - **Module:** `python -m inductiveclaw`
 
-Both call `inductiveclaw.__main__:main()`. Note: InductiveClaw shells out to the Claude Code CLI, so install `claude` (`npm install -g @anthropic-ai/claude-code`) and run `claude login` before launching `iclaw` if you want OAuth.
+Both call `inductiveclaw.__main__:main()`.
+
+## Modes
+
+### Interactive (default)
+```bash
+iclaw                    # REPL in current directory
+iclaw -p ./my-project    # REPL in specific directory
+```
+
+### Autonomous
+```bash
+iclaw -g "Build a snake game"              # iterate until quality threshold
+iclaw -g "Polish the UI" -p ./my-project   # continue existing project
+```
+
+### Setup
+```bash
+iclaw --setup    # guided provider configuration
+```
 
 ## Arguments
 
-### Required
-
-| Flag | Description |
-|------|-------------|
-| `-g, --goal GOAL` | What to build. Passed verbatim to the agent. |
-
-### Project
-
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-p, --project DIR` | `./project` | Project directory. Created if it doesn't exist. |
-| `-m, --model MODEL` | SDK default | Model override (e.g. `claude-sonnet-4-6`). |
+| `-g, --goal GOAL` | *(none)* | What to build. Omit for interactive mode. |
+| `--setup` | off | Run guided provider setup |
+| `-p, --project DIR` | `.` (interactive) / `./project` (autonomous) | Project directory |
+| `-m, --model MODEL` | provider default | Model override |
+| `-t, --threshold N` | `8` | Quality score (1-10) to stop at (autonomous only) |
+| `--max-iterations N` | `100` | Hard cap on iterations (autonomous only) |
+| `--eval-frequency N` | `3` | Self-evaluate every N iterations (autonomous only) |
+| `--no-screenshot` | off | Disable Playwright screenshot evaluation |
+| `--port PORT` | `3000` | Dev server port for screenshots |
+| `--dev-cmd CMD` | auto-detect | Dev server command |
+| `-q, --quiet` | off | Minimal output |
+| `-v, --verbose` | off | Full agent text output |
 
-### Iteration Control
+## Interactive Slash Commands
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-t, --threshold N` | `8` | Quality score (1-10) to stop at. |
-| `--max-iterations N` | `100` | Hard cap on outer loop iterations. |
-| `--eval-frequency N` | `3` | Run `self_evaluate` every N iterations. |
-
-### Auth
-
-| Flag | Description |
-|------|-------------|
-| `--use-api-key` | Prefer `ANTHROPIC_API_KEY` env var over OAuth. |
-| `--api-key KEY` | Provide an API key directly. |
-
-### Visual
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--no-screenshot` | off | Disable Playwright screenshot evaluation. |
-| `--port PORT` | `3000` | Dev server port for screenshots. |
-| `--dev-cmd CMD` | auto-detect (currently parsed but unused) | Dev server command (e.g. `npm run dev`). |
-
-### Output
-
-| Flag | Description |
-|------|-------------|
-| `-q, --quiet` | Suppress verbose agent reasoning output (no effect without `-v`). |
-| `-v, --verbose` | Print the agent's reasoning/tool output; `--quiet` disables this mode. |
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/config` | Re-run provider setup |
+| `/status` | Show provider status |
+| `/cost` | Show session cost and turns |
+| `/clear` | Clear conversation (new session) |
+| `/quit` | Exit iclaw |
 
 ## Startup Flow
 
 ```
 parse_args()
-  → ClawConfig(...)
-  → auth.resolve(prefer_oauth, force_api_key)
-  → anyio.run(agent.run, config, auth_result)
+  → ProviderRegistry()
+  → load saved config or auto-detect Anthropic
+  → if no provider: run_setup()
+  → if -g: agent.run(config, registry)     # autonomous
+  → else:  run_interactive(registry, cwd)   # interactive
 ```
-
-No business logic in `__main__.py` — it maps args to config and delegates.
 
 ## Examples
 
 ```bash
-# Minimal
-iclaw -g "Build a todo app"
+# Interactive — just start coding
+iclaw
 
-# Full control
-iclaw -g "Roguelike deckbuilder" -p ./game -m claude-sonnet-4-6 \
-  -t 7 --max-iterations 50 --eval-frequency 5 --port 5173 -v
+# Autonomous — build from scratch
+iclaw -g "Roguelike deckbuilder with pixel art"
 
-# Resume existing project
-iclaw -p ./my-game -g "Add sound effects and polish the UI"
+# Autonomous — resume existing project
+iclaw -p ./game -g "Add sound effects and polish the tutorial"
+
+# Quick prototype
+iclaw -g "Simple snake game" --threshold 5 --max-iterations 10
 
 # Non-visual project
-iclaw -g "CLI tool for CSV analysis" --no-screenshot -q
+iclaw -g "CLI for CSV analysis" --no-screenshot -q
 
-# Explicit API key
-iclaw --api-key sk-ant-... -g "Chat application"
+# Configure providers
+iclaw --setup
 ```

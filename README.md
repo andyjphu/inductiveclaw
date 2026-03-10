@@ -17,97 +17,109 @@ pip install iclaw[screenshot]
 playwright install chromium
 ```
 
-Requires the Claude Code CLI (`npm install -g @anthropic-ai/claude-code`) because the Claude Agent SDK shells out to `claude` for OAuth. Run `claude login` once before launching InductiveClaw if you plan to use a Max/Pro subscription.
+Requires the Claude Code CLI (`npm install -g @anthropic-ai/claude-code`) because the Agent SDK shells out to `claude`. Run `claude login` once if you plan to use a Max/Pro subscription.
 
-## Authentication
+## Setup
 
-InductiveClaw prefers OAuth (your existing Claude Code / Max subscription login) by default, falling back to an API key. OAuth works via the Claude CLI, so you need `claude` installed and `claude login` completed on the machine running `iclaw`.
-
-> Anthropic recently blocked third-party projects from routing Max/Pro subscription OAuth tokens through unofficial API gateways (e.g., OpenCode/OpenClaw). This hit is targeted at redistributed/commercial use, so using `claude login` locally for personal dev remains fine, but running `iclaw` as part of an external product or resale exposes you to the same restrictions that triggered the ban. Keep your usage personal and off public-facing services.
-
-**Option 1 — Max/Pro subscription (recommended):**
+On first run, iclaw auto-detects your Claude Code login. You can also run guided setup:
 
 ```bash
-claude login   # one-time setup
-iclaw -g "your goal"
+iclaw --setup
 ```
 
-**Option 2 — API key:**
+This walks you through configuring providers (currently Anthropic/Claude; OpenAI and Gemini are planned future features).
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-iclaw -g "your goal"
-```
-
-**Option 3 — Explicit key:**
-
-```bash
-iclaw --api-key sk-ant-... -g "your goal"
-```
+> Anthropic has blocked third-party projects from routing Max/Pro subscription OAuth tokens through unofficial API gateways. Using `claude login` locally for personal dev is fine, but keep your usage personal and off public-facing services.
 
 ## Usage
+
+### Interactive mode (default)
+
+```bash
+iclaw                          # REPL in current directory
+iclaw -p ./my-project          # REPL in specific directory
+```
+
+Type `/help` for available commands, `/config` to change providers, `/quit` to exit.
+
+### Autonomous mode
 
 ```bash
 # Build a game from scratch
 iclaw -g "Build a roguelike deckbuilder with pixel art style"
 
 # Continue on existing project
-iclaw -p ./my-game -g "Polish visuals, add sound effects, improve the tutorial"
+iclaw -p ./my-game -g "Polish visuals, add sound effects"
 
 # Quick prototype with low quality bar
 iclaw -g "Simple snake game in the browser" --threshold 5 --max-iterations 10
 
-# Disable screenshots for non-visual projects
+# Non-visual project
 iclaw -g "Build a CLI tool for CSV analysis" --no-screenshot
 ```
 
 ## How It Works
 
-1. You give InductiveClaw a goal
-2. It initializes the project, creates a backlog, and builds the first feature
-3. Each iteration: orient → plan → build → verify → evaluate → document → continue
-4. The loop runs until quality threshold is met, max iterations reached, or you interrupt with Ctrl+C
+**Interactive mode:** A conversational REPL (like Claude Code) with multi-turn context. The agent has access to Bash, file tools, and your project directory.
 
-Project state is persisted on disk (`BACKLOG.md`, `EVALUATIONS.md`, source files), so you can stop and resume at any time.
+**Autonomous mode:**
+1. You give it a goal
+2. It initializes the project, creates a backlog, and builds the first feature
+3. Each iteration: orient, plan, build, verify, evaluate, document, continue
+4. Stops when quality threshold is met, max iterations reached, or Ctrl+C
+
+Project state persists on disk (`BACKLOG.md`, `EVALUATIONS.md`, source files), so you can stop and resume.
 
 ## CLI Reference
 
 ```
-usage: iclaw [-h] -g GOAL [-p PROJECT] [-m MODEL] [-t THRESHOLD]
-             [--max-iterations N] [--eval-frequency N]
-             [--use-api-key] [--api-key KEY]
-             [--no-screenshot] [--port PORT]
-             [--dev-cmd CMD] [-q] [-v]
+iclaw [-g GOAL] [--setup] [-p DIR] [-m MODEL] [-t N]
+      [--max-iterations N] [--eval-frequency N]
+      [--no-screenshot] [--port PORT] [-q] [-v]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-g, --goal` | *required* | What to build |
-| `-p, --project` | `./project` | Project directory |
-| `-m, --model` | SDK default | Model override |
-| `-t, --threshold` | `8` | Quality threshold (1-10) |
-| `--max-iterations` | `100` | Max outer loop iterations |
-| `--eval-frequency` | `3` | Self-evaluate every N iterations |
-| `--use-api-key` | off | Prefer API key over OAuth |
-| `--api-key` | env | Explicit API key |
+| `-g, --goal` | *(none)* | What to build (omit for interactive mode) |
+| `--setup` | off | Run guided provider setup |
+| `-p, --project` | `.` / `./project` | Project directory |
+| `-m, --model` | provider default | Model override |
+| `-t, --threshold` | `8` | Quality threshold 1-10 (autonomous) |
+| `--max-iterations` | `100` | Max iterations (autonomous) |
+| `--eval-frequency` | `3` | Evaluate every N iterations |
 | `--no-screenshot` | off | Disable visual evaluation |
 | `--port` | `3000` | Dev server port for screenshots |
-| `--dev-cmd` | auto | Dev server command (parsed but not consumed by the runtime) |
-| `-q, --quiet` | off | Suppress verbose agent reasoning output (no effect unless `-v` is also set) |
-| `-v, --verbose` | off | Print the agent's reasoning/tool output; `--quiet` disables this mode |
+| `-q, --quiet` | off | Minimal output |
+| `-v, --verbose` | off | Full agent output |
 
 ## Architecture
 
 ```
 inductiveclaw/
 ├── __init__.py
-├── __main__.py     # CLI entrypoint (argparse)
-├── auth.py         # OAuth-first authentication
-├── agent.py        # Outer autonomous loop + Agent SDK calls
-├── tools.py        # Custom MCP tools (backlog, evaluate, screenshot, docs)
-├── config.py       # Configuration + usage tracking
-└── display.py      # Terminal output formatting (Rich)
+├── __main__.py        # CLI routing (interactive vs autonomous)
+├── interactive.py     # REPL mode (ClaudeSDKClient)
+├── agent.py           # Autonomous iteration loop
+├── setup.py           # Guided provider setup
+├── tools.py           # Custom MCP tools
+├── config.py          # Configuration + usage tracking
+├── display.py         # Terminal output (Rich)
+├── providers/         # Multi-provider abstraction
+│   ├── anthropic.py   # Claude (implemented)
+│   ├── openai.py      # Future feature
+│   └── gemini.py      # Future feature
+└── prompts/           # Prompt templates (.md files)
 ```
+
+## Landing Page
+
+The `web/` submodule contains the project landing page — a Next.js 16 app with scroll-driven animations, an Art Nouveau-inspired philosophy section, and an animated terminal demo. See `docs/web.md` for architecture details.
+
+## Future Features
+
+- **OpenAI Codex** — Codex app-server and API key integration
+- **Gemini** — Google OAuth and API key integration
+- **Provider cycling** — automatic failover between providers on rate limits
 
 ## License
 

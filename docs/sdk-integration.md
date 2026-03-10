@@ -2,15 +2,20 @@
 
 ## Package
 
-`claude-agent-sdk` (import as `claude_agent_sdk`). Shells out to the Claude Code CLI under the hood.
+`claude-agent-sdk` (import as `claude_agent_sdk`). Shells out to the Claude Code CLI.
+
+**Current limitation:** The SDK only supports Claude models. OpenAI and Gemini providers will need separate API client implementations.
 
 ## Key Imports
 
 ```python
-# Core
+# One-shot queries (autonomous mode)
 from claude_agent_sdk import query, ClaudeAgentOptions
 
-# Message types (yielded by query())
+# Multi-turn sessions (interactive mode)
+from claude_agent_sdk import ClaudeSDKClient
+
+# Message types
 from claude_agent_sdk import AssistantMessage, ResultMessage
 from claude_agent_sdk.types import TextBlock, ToolUseBlock
 
@@ -25,23 +30,40 @@ from claude_agent_sdk import CLINotFoundError, CLIConnectionError, ProcessError
 
 | Field | Value | Purpose |
 |-------|-------|---------|
-| `allowed_tools` | Built-ins + `mcp__iclaw-tools__*` | Auto-approve these tools |
-| `permission_mode` | `"bypassPermissions"` | Fully autonomous operation |
-| `cwd` | Resolved project dir | Working directory for the inner agent |
+| `allowed_tools` | Built-ins + `mcp__iclaw-tools__*` | Auto-approve tools |
+| `permission_mode` | `"bypassPermissions"` | Fully autonomous |
+| `cwd` | Resolved project dir | Working directory |
+| `add_dirs` | `[project_dir]` | Restrict file access to project |
 | `max_turns` | `config.max_turns_per_iteration` (30) | Cap tool calls per iteration |
-| `mcp_servers` | `{"iclaw-tools": server}` | Custom tool server |
-| `system_prompt` | `SYSTEM_PROMPT` constant | Agent identity and rules |
-| `env` | `auth_result.get_sdk_env()` | Modified env for auth |
-| `model` | `config.model` (optional) | Model override |
+| `mcp_servers` | `{"iclaw-tools": server}` | Custom tool server (autonomous only) |
+| `system_prompt` | Loaded from `.md` file | Agent identity and rules |
+| `env` | `provider.get_sdk_env()` | Auth env from active provider |
+| `model` | `config.model` or `provider.get_model()` | Model override |
 
-## Message Stream
+## Autonomous Mode: `query()`
 
-`query()` is an async generator yielding:
+Async generator yielding `AssistantMessage` and `ResultMessage`:
 
-1. **`AssistantMessage`** — contains `content: list[TextBlock | ToolUseBlock | ...]`
-   - `TextBlock.text` — agent's reasoning/output
-   - `ToolUseBlock.name` / `ToolUseBlock.input` — tool calls
-2. **`ResultMessage`** — final message with `result`, `duration_ms`, `num_turns`, `total_cost_usd`, `session_id`
+```python
+async for message in query(prompt=prompt, options=options):
+    if isinstance(message, AssistantMessage):
+        for block in message.content:
+            if isinstance(block, TextBlock): ...
+            elif isinstance(block, ToolUseBlock): ...
+    if isinstance(message, ResultMessage):
+        # .total_cost_usd, .num_turns, .session_id
+```
+
+## Interactive Mode: `ClaudeSDKClient`
+
+Async context manager for multi-turn conversation:
+
+```python
+async with ClaudeSDKClient(options=options) as client:
+    await client.query("user input")
+    async for message in client.receive_response():
+        ...
+```
 
 ## Custom Tool Pattern
 
@@ -53,4 +75,4 @@ async def my_tool(args: dict[str, Any]) -> dict[str, Any]:
 server = create_sdk_mcp_server(name="server-name", version="1.0.0", tools=[my_tool])
 ```
 
-Tool names in `allowed_tools` follow the pattern `mcp__{server_name}__{tool_name}`.
+Tool names in `allowed_tools`: `mcp__{server_name}__{tool_name}`.

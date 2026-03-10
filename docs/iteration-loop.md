@@ -7,7 +7,7 @@ The outer loop in `agent.py` calls `query()` repeatedly. Each call is one "itera
 ```
 for iteration in 1..max_iterations:
     prompt  = build_iteration_prompt(config, iteration, tracker)
-    options = _build_sdk_options(config, tools_server, auth_result)
+    options = _build_sdk_options(config, tools_server, registry)
     result  = await _run_single_iteration(prompt, options, ...)
     if result.should_stop: break
 ```

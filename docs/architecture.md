@@ -1,54 +1,73 @@
 # Architecture
 
-InductiveClaw is structured as six modules with strict separation of concerns. No module exceeds ~300 lines.
+InductiveClaw has two modes sharing a common provider and display layer.
 
 ## Module Dependency Graph
 
 ```
-__main__.py
-  ├── auth.py        (resolve authentication)
-  ├── config.py      (ClawConfig dataclass)
-  └── agent.py       (run the loop)
-        ├── tools.py     (custom MCP server)
-        ├── display.py   (terminal output)
-        ├── config.py    (ClawConfig, UsageTracker)
-        └── auth.py      (AuthResult.get_sdk_env)
+__main__.py (CLI routing)
+  ├── --setup  → setup.py (guided provider config)
+  ├── -g "goal" → agent.py (autonomous loop)
+  │                 ├── tools.py (custom MCP server)
+  │                 ├── prompts/ (system.md, iteration templates)
+  │                 ├── display.py
+  │                 ├── config.py (ClawConfig, UsageTracker)
+  │                 └── providers/ (env + model for active provider)
+  └── (no -g)  → interactive.py (REPL)
+                    ├── prompts/interactive.md
+                    ├── display.py
+                    └── providers/
 ```
 
-No circular dependencies. `config.py` and `auth.py` are leaf modules with no internal imports.
+### providers/ (shared by both modes)
+
+```
+providers/
+├── __init__.py     ProviderRegistry, cycling, config persistence
+├── base.py         BaseProvider ABC, RateLimitTracker, enums
+├── anthropic.py    Claude (OAuth + API key) — IMPLEMENTED
+├── openai.py       OpenAI (config stub, future feature)
+└── gemini.py       Gemini (config stub, future feature)
+```
+
+No circular dependencies. `config.py`, `providers/base.py` are leaf modules.
 
 ## Data Flow
 
+### Autonomous mode
 ```
-CLI args → ClawConfig → agent.run()
-                          │
-                          ├── create_iclaw_tools(config) → MCP server
-                          ├── auth_result.get_sdk_env() → env dict
-                          │
-                          └── for each iteration:
-                                build_iteration_prompt(config, iteration, tracker)
-                                  → prompt string
-                                _build_sdk_options(config, tools_server, auth_result)
-                                  → ClaudeAgentOptions
-                                query(prompt, options)
-                                  → stream of AssistantMessage / ResultMessage
-                                _extract_iteration_results(config, tracker)
-                                  → IterationResult (reads BACKLOG.md, EVALUATIONS.md)
+CLI args → ClawConfig + ProviderRegistry
+  → agent.run(config, registry)
+    ├── create_iclaw_tools(config) → MCP server
+    ├── registry.active.get_sdk_env() → env dict
+    └── for each iteration:
+          query(prompt, options) → stream messages
+          _extract_iteration_results() → reads BACKLOG.md, EVALUATIONS.md
+          on rate limit → registry.handle_rate_limit() → cycle provider
+```
+
+### Interactive mode
+```
+ProviderRegistry → interactive.run_interactive(registry, cwd)
+  → ClaudeSDKClient(options) as client
+    └── while True:
+          input → slash command or client.query(input)
+          on /config → run_setup(registry), restart session
+          on rate limit → cycle provider, restart session
 ```
 
 ## Key Design Decisions
 
-### Fresh SDK calls per iteration (not one long session)
-Each `query()` call is an independent conversation. Over 20+ tool calls, context fills with file contents and bash outputs. Fresh calls reset this automatically — equivalent to Claude Code's `/compact` but built-in. Project state persists on disk.
+### Fresh SDK calls per iteration (autonomous mode)
+Each `query()` call resets context. Project state persists on disk (BACKLOG.md, EVALUATIONS.md, source files). Equivalent to automatic `/compact`.
 
-### Custom MCP tools instead of just Bash + Write
-Tool names are prompts. A tool called `self_evaluate` with structured score inputs produces far better evaluation than "write scores to a file." Same for `update_backlog` — the schema forces explicit tracking.
+### ClaudeSDKClient for interactive mode
+Multi-turn context manager preserves conversation across turns. Session restarts on `/clear`, `/config`, or provider cycling.
 
-### OAuth-first auth
-Autonomous loops can run 50+ iterations. On API billing that's $15-75+. On a Max subscription it's flat rate. OAuth-first makes the default cost-effective.
+### Provider abstraction
+Each provider implements `get_sdk_env()` and `get_model()`. The registry handles cycling on rate limits. Config persists to `~/.config/iclaw/providers.json`.
 
-### `anyio` instead of `asyncio`
-The Claude Agent SDK uses `anyio` internally. Matching the runtime avoids nested event loop issues.
+**Current limitation:** Only Anthropic is fully functional. The Agent SDK shells out to the `claude` CLI, so OpenAI and Gemini require separate API client implementations (future feature).
 
-### `bypassPermissions` mode
-InductiveClaw runs fully autonomously. The inner agent needs unrestricted access to Bash, file operations, etc. without human approval prompts.
+### Sandbox
+Both modes pass `add_dirs=[project_dir]` to restrict file access. System prompts instruct: no sudo, no global installs, local deps only.
