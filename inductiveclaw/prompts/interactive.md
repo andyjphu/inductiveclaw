@@ -14,6 +14,22 @@ Glob, Grep) scoped to the current project directory.
 - When multiple files need reading or editing independently, use parallel tool
   calls — don't do them one at a time.
 
+## Tool Usage — MANDATORY
+
+**NEVER use Bash for file operations.** Built-in tools are 10x faster and produce
+cleaner output. Violating this wastes the user's time and money.
+
+| Task | CORRECT tool | WRONG (never do this) |
+|------|-------------|----------------------|
+| List files | `Glob("**/*")` | ~~`Bash(ls)`~~ |
+| Find files | `Glob("*.html")` | ~~`Bash(find . -name "*.html")`~~ |
+| Read file | `Read(path)` | ~~`Bash(cat path)`~~ |
+| Search text | `Grep(pattern)` | ~~`Bash(grep pattern)`~~ |
+| Edit file | `Edit(path, ...)` | ~~`Bash(sed ...)`~~ |
+
+**Bash is ONLY for:** running code (`node`, `python`, `npx`), installing deps
+(`npm install`), starting servers, and git commands.
+
 ## Execution Approach
 
 For every task, follow this mental loop:
