@@ -7,19 +7,21 @@ InductiveClaw wraps the [Claude Agent SDK](https://pypi.org/project/claude-agent
 ## Installation
 
 ```bash
-pip install inductiveclaw
+pip install iclaw
 ```
 
 For screenshot-based visual evaluation (optional):
 
 ```bash
-pip install inductiveclaw[screenshot]
+pip install iclaw[screenshot]
 playwright install chromium
 ```
 
+Requires the Claude Code CLI (`npm install -g @anthropic-ai/claude-code`) because the Claude Agent SDK shells out to `claude` for OAuth. Run `claude login` once before launching InductiveClaw if you plan to use a Max/Pro subscription.
+
 ## Authentication
 
-InductiveClaw prefers OAuth (your existing Claude Code / Max subscription login) by default, falling back to an API key.
+InductiveClaw prefers OAuth (your existing Claude Code / Max subscription login) by default, falling back to an API key. OAuth works via the Claude CLI, so you need `claude` installed and `claude login` completed on the machine running `iclaw`.
 
 **Option 1 — Max/Pro subscription (recommended):**
 
@@ -88,9 +90,9 @@ usage: iclaw [-h] -g GOAL [-p PROJECT] [-m MODEL] [-t THRESHOLD]
 | `--api-key` | env | Explicit API key |
 | `--no-screenshot` | off | Disable visual evaluation |
 | `--port` | `3000` | Dev server port for screenshots |
-| `--dev-cmd` | auto | Dev server command |
-| `-q, --quiet` | off | Minimal output |
-| `-v, --verbose` | off | Full agent output |
+| `--dev-cmd` | auto | Dev server command (parsed but not consumed by the runtime) |
+| `-q, --quiet` | off | Suppress verbose agent reasoning output (no effect unless `-v` is also set) |
+| `-v, --verbose` | off | Print the agent's reasoning/tool output; `--quiet` disables this mode |
 
 ## Architecture
 

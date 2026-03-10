@@ -39,3 +39,6 @@ next-env.d.ts
 
 __pycache__
 dist
+sandbox
+.vscode
+dev

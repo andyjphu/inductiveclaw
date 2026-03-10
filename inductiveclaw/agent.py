@@ -21,50 +21,8 @@ from claude_agent_sdk.types import TextBlock, ToolUseBlock
 from . import display
 from .auth import AuthResult
 from .config import ClawConfig, UsageTracker
+from .prompts import SYSTEM_PROMPT, build_iteration_prompt
 from .tools import create_iclaw_tools
-
-SYSTEM_PROMPT = """\
-You are InductiveClaw, an autonomous iterative development agent. You build
-software through continuous iteration — you NEVER stop after one feature.
-
-## Your Identity
-You are a solo developer on an unlimited game jam. You have taste, you care
-about craft, and you ship. You're not writing homework — you're building
-something you'd be proud to put on your portfolio.
-
-## Your Workflow (every iteration)
-1. ORIENT — Read BACKLOG.md and scan existing code to understand current state
-2. PLAN — Pick the single highest-impact thing to build or improve next
-3. BUILD — Write clean, production-quality code with real comments
-4. VERIFY — Run the code. If it's a web app, start the server. Check for errors.
-5. EVALUATE — Every few features, use self_evaluate to honestly score quality
-6. DOCUMENT — Update BACKLOG.md with what you did and what's next
-7. CONTINUE — You are not done. Pick the next thing.
-
-## Quality Standards
-- Code: Clean architecture, consistent style, meaningful names, real comments
-- Visual: No placeholder text, no ugly defaults, unique personality/style
-- Testing: Run what you build. Fix errors before moving on.
-- Docs: Keep BACKLOG.md and README.md current. Write like a human.
-- Industry standard: The result should feel like it belongs on itch.io or a
-  polished GitHub repo, not a tutorial exercise.
-
-## Rules
-- Always check existing code before writing (avoid duplication)
-- Always run code after writing it (catch errors immediately)
-- If stuck on a bug for >3 attempts, note it in BACKLOG.md and move on
-- Build incrementally — working skeleton first, then features, then polish
-- When you evaluate visual quality, use take_screenshot if available, then
-  Read the screenshot file to inspect it visually
-- Prefer small, focused files over monolithic ones
-- Commit to a unique aesthetic direction early and maintain it
-
-## What You Are NOT
-- You are NOT answering a question
-- You are NOT completing a single task
-- You are NOT writing a code snippet
-- You ARE building a complete project autonomously over many iterations
-"""
 
 MAX_CONSECUTIVE_ERRORS = 3
 
@@ -74,59 +32,6 @@ class IterationResult:
     should_stop: bool = False
     features_completed: list[str] = field(default_factory=list)
     quality_score: int | None = None
-
-
-def build_iteration_prompt(config: ClawConfig, iteration: int, tracker: UsageTracker) -> str:
-    if iteration == 1:
-        return (
-            f"GOAL: {config.goal}\n\n"
-            "This is iteration 1. The project directory may be empty or may have existing files.\n\n"
-            "Your first tasks:\n"
-            "1. Check if there are existing files (use Glob)\n"
-            "2. If empty: initialize the project structure, create BACKLOG.md with a\n"
-            "   prioritized feature list of 8-15 items, and build the first core feature\n"
-            "3. If files exist: read BACKLOG.md, orient yourself, and continue where\n"
-            "   the previous session left off\n"
-            "4. After building, run the code to verify it works\n"
-            "5. Update BACKLOG.md\n\n"
-            "Go. Do not ask for clarification — make decisions and build."
-        )
-
-    parts = [f"GOAL: {config.goal}", f"This is iteration {iteration}."]
-
-    if tracker.features_completed:
-        recent = tracker.features_completed[-5:]
-        parts.append(f"Recently completed: {', '.join(recent)}")
-
-    if tracker.last_quality_score is not None:
-        parts.append(f"Last quality score: {tracker.last_quality_score}/10")
-        gap = config.quality_threshold - tracker.last_quality_score
-        if gap > 0:
-            parts.append(f"Need {gap} more points to reach threshold.")
-
-    if tracker.errors:
-        recent_errors = tracker.errors[-2:]
-        parts.append(f"Recent errors to be aware of: {'; '.join(recent_errors)}")
-
-    if iteration % config.eval_frequency == 0:
-        parts.append(
-            "\nThis is an evaluation iteration. After making progress, "
-            "use self_evaluate to score the current state. Be critical and honest."
-        )
-
-    if config.auto_screenshot and iteration % config.eval_frequency == 0:
-        parts.append(
-            "If the project has a visual component, use take_screenshot to "
-            "capture the current state, then Read the screenshot to evaluate "
-            "visual quality."
-        )
-
-    parts.append(
-        "\nRead BACKLOG.md, pick the highest-impact next item, build it, "
-        "verify it runs, and update the backlog. Do not stop early."
-    )
-
-    return "\n".join(parts)
 
 
 def _build_sdk_options(

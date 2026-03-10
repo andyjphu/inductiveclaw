@@ -622,7 +622,7 @@ def main():
 
 ```toml
 [project]
-name = "inductiveclaw"
+name = "iclaw"
 version = "0.1.0"
 description = "Autonomous iterative coding agent — builds until the vibe is right"
 requires-python = ">=3.10"
@@ -704,7 +704,7 @@ After building, verify the following manually:
 
 ```bash
 # Install
-pip install inductiveclaw
+  pip install iclaw
 
 # Build a game from scratch (uses Max subscription by default)
 iclaw -g "Build a roguelike deckbuilder with pixel art style and procedural dungeon generation"

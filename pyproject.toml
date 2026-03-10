@@ -1,5 +1,5 @@
 [project]
-name = "inductiveclaw"
+name = "iclaw"
 version = "0.1.0"
 description = "Autonomous iterative coding agent — builds until the vibe is right"
 readme = "README.md"
