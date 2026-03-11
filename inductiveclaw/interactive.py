@@ -160,12 +160,12 @@ def _write_sandbox_settings(project_dir: str) -> None:
     #   //path  = absolute filesystem path (// prefix, NOT triple slash)
     #   ../path = parent directory traversal
     #   path    = relative to cwd (sandbox dir)
-    #   * does NOT match / in Bash rules
     #   deny evaluates before allow; first match wins.
     #
-    # NOTE: Sub-agent permission inheritance from settings.json is buggy
-    # (known issues: #22665, #18950, #10906). We layer CLAUDE.md instructions
-    # as defense-in-depth.
+    # Bash rules are NOT in settings.json — can_use_tool is the single
+    # authority for Bash permissions (main process). Sub-agents get Bash
+    # protection from OS sandbox (Seatbelt/bubblewrap) + CLAUDE.md rules.
+    # See: https://github.com/anthropics/claude-code/issues/22665
     resolved_str = str(Path(project_dir).resolve())
     settings = {
         "permissions": {
@@ -178,17 +178,6 @@ def _write_sandbox_settings(project_dir: str) -> None:
                 "Read(../**)",
                 "Edit(../**)",
                 "Write(../**)",
-                # Block Bash parent traversal and absolute paths
-                # (note: * does NOT match / in Bash rules)
-                "Bash(cd ..*)",
-                "Bash(cat ..*)",
-                "Bash(ls ..*)",
-                "Bash(find ..*)",
-                "Bash(rm ..*)",
-                "Bash(cp ..*)",
-                "Bash(mv ..*)",
-                "Bash(* ../*)",
-                "Bash(sudo *)",
             ],
             "allow": [
                 # Allow sandbox absolute path explicitly (so deny // doesn't block it)
@@ -198,7 +187,6 @@ def _write_sandbox_settings(project_dir: str) -> None:
                 f"Edit(//{resolved_str.lstrip('/')}/**)",
                 f"Write(//{resolved_str.lstrip('/')}/**)",
                 # Allow relative paths (within cwd = sandbox)
-                "Bash(*)",
                 "Read(**)",
                 "Edit(**)",
                 "Write(**)",
@@ -479,9 +467,12 @@ def _build_options(
 
     sandbox: SandboxSettings = {
         "enabled": True,
-        # CRITICAL: autoAllowBashIfSandboxed=True bypasses can_use_tool for Bash.
-        # We need can_use_tool to enforce sandbox boundaries, so keep this False.
-        "autoAllowBashIfSandboxed": False,
+        # auto-approve Bash when OS sandbox is active. The OS sandbox
+        # (Seatbelt/bubblewrap) blocks writes outside project dir at the
+        # kernel level. can_use_tool adds defense-in-depth (blocks sudo,
+        # .., absolute paths). Setting this True prevents the CLI's own
+        # permission prompt from silently failing in programmatic mode.
+        "autoAllowBashIfSandboxed": True,
         "allowUnsandboxedCommands": False,
     }
 

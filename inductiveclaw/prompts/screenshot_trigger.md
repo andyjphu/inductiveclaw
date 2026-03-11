@@ -1,4 +1,12 @@
-## Visual Review Protocol
+<EXTREMELY_IMPORTANT>
+
+## Visual Review Protocol — MANDATORY, NOT OPTIONAL
+
+Screenshots are the ONLY way you can verify visual output. You are an LLM without
+eyes — you cannot "imagine" what the UI looks like from reading code. Every time
+you skip a screenshot, you are shipping blind.
+
+</EXTREMELY_IMPORTANT>
 
 Do NOT take a single screenshot and call it done. Systematic visual review:
 
@@ -45,3 +53,13 @@ For key interactive features, screenshot multiple states:
 ### Step 5: Fix before scoring
 If ANY visual issue is found, fix it BEFORE calling self_evaluate.
 Visual bugs found during review that aren't fixed should fail the eval.
+
+### Anti-Rationalization
+
+| Your excuse for skipping screenshots | Why it's wrong |
+|---|---|
+| "I already know what it looks like" | You're an LLM. You literally cannot see. Take the screenshot. |
+| "The code is correct so the UI must be fine" | CSS bugs, z-index issues, overflow clipping — code review can't catch these. |
+| "It's just a small change" | Small CSS changes cause big visual regressions. Screenshot. |
+| "Screenshots take too long" | A 5-second screenshot saves a 30-minute debugging session. |
+| "I'll screenshot at the eval" | Visual bugs compound. Catch them when you make them, not 5 features later. |

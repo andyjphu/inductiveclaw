@@ -303,8 +303,81 @@ def create_iclaw_tools(config: ClawConfig):
             ]
         }
 
+    @tool(
+        "smoke_test",
+        "Run an interactive smoke test against the running application. Write a test "
+        "script with actions (click, type, press keys, navigate) and assertions "
+        "(check visibility, text content, element count, console errors). Returns a "
+        "structured pass/fail report. Use this to verify features ACTUALLY work — "
+        "especially cross-feature interactions like key bindings across app states.\n\n"
+        "Actions: click:SELECTOR, fill:SELECTOR TEXT, press:KEY, type:TEXT, "
+        "wait:MS, navigate:URL, hover:SELECTOR\n"
+        "Assertions: assert_visible:SELECTOR, assert_not_visible:SELECTOR, "
+        "assert_text:SELECTOR EXPECTED, assert_count:SELECTOR N, assert_url:PATTERN, "
+        "assert_no_errors, assert_eval:JS_EXPRESSION\n"
+        "Lines starting with # are comments.",
+        {
+            "url": str,
+            "test_name": str,
+            "script": str,
+            "viewport_width": int,
+            "viewport_height": int,
+        },
+    )
+    async def smoke_test(args: dict[str, Any]) -> dict[str, Any]:
+        url = args.get("url", f"http://localhost:{config.screenshot_port}")
+        test_name = args.get("test_name", "unnamed test")
+        script = args.get("script", "")
+        width = args.get("viewport_width", 1280)
+        height = args.get("viewport_height", 720)
+
+        if not script.strip():
+            return {"content": [{"type": "text", "text": "Error: empty test script."}]}
+
+        try:
+            from .smoke import run_smoke_test, format_smoke_report, save_smoke_report
+        except ImportError:
+            pass
+
+        try:
+            from playwright.async_api import async_playwright  # noqa: F401
+        except ImportError:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Playwright is not installed. To enable smoke tests:\n"
+                            "  pip install playwright && playwright install chromium"
+                        ),
+                    }
+                ]
+            }
+
+        try:
+            results, console_errors, passed, failed = await run_smoke_test(
+                url=url, script=script, width=width, height=height,
+            )
+            report = format_smoke_report(
+                test_name, results, console_errors, passed, failed,
+            )
+            save_smoke_report(project, test_name, report)
+            return {"content": [{"type": "text", "text": report}]}
+        except Exception as e:
+            return {
+                "content": [
+                    {"type": "text", "text": f"Smoke test failed: {e}"}
+                ]
+            }
+
     return create_sdk_mcp_server(
         name="iclaw-tools",
         version="1.0.0",
-        tools=[update_backlog, self_evaluate, take_screenshot, write_docs],
+        tools=[
+            update_backlog,
+            self_evaluate,
+            take_screenshot,
+            write_docs,
+            smoke_test,
+        ],
     )

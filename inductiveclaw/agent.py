@@ -50,6 +50,7 @@ def _build_sdk_options(
             "mcp__iclaw-tools__self_evaluate",
             "mcp__iclaw-tools__take_screenshot",
             "mcp__iclaw-tools__write_docs",
+            "mcp__iclaw-tools__smoke_test",
         ],
         permission_mode="bypassPermissions",
         cwd=project_dir,

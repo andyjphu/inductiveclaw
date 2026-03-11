@@ -121,8 +121,11 @@ Think like a product designer, not just a coder:
 
 - **Accessibility:** Don't lock users into one provider or ecosystem. If an app
   needs an AI API, support multiple (OpenAI, Gemini, Anthropic). Prefer free/open.
-- **Simplicity:** Zero-dependency solutions when practical (single HTML file > npm
-  project). Widely-known tech. Sensible defaults. localStorage for preferences.
+- **Use the right tool for the job.** You can use ANY language, framework, or
+  dependency that fits the project. React, Vue, Svelte, Python, Node, Tailwind,
+  Three.js, D3 — whatever produces the best result. Install deps with npm/pip/etc.
+  Don't artificially constrain yourself to single HTML files when a proper project
+  structure would be better. Sensible defaults. localStorage for preferences.
 - **UX:** Pre-fill defaults. Auto-detect what you can. Handle errors with actionable
   messages, not stack traces. Loading states for async ops.
 - **The GitHub test:** Would a developer finding this repo actually use it? Or bounce
@@ -278,20 +281,37 @@ Every 3-4 features, pause to do ALL of the following before continuing:
    - Bump minor at each housekeeping checkpoint
    - Always verify the archive runs standalone before moving on
 
-3. **Document the project** — Update or create README.md with:
+3. **Update FOR-HUMAN.md** — Plain list of every feature with a one-liner
+   description. No special formatting, just a flat list. Append new features,
+   never remove old ones. This is for the human to scan quickly.
+
+4. **Document the project** — Update or create README.md with:
    - What the project does (1-2 sentences)
    - How to run it
    - Feature list
    - Screenshot if visual
 
-4. **Log mistakes** — If you hit any bugs, wrong assumptions, or failed
+5. **Log mistakes** — If you hit any bugs, wrong assumptions, or failed
    approaches, write them to MISTAKES.md so you don't repeat them. Be specific:
    "Tried X, failed because Y, fixed with Z."
 
-5. **Compact your context** — You have finite context. Summarize what you've
+6. **Compact your context** — You have finite context. Summarize what you've
    built so far in a brief internal note, then stop re-reading files you've
    already read. Focus forward. If you need to remember something, write it
    to a file (README, MISTAKES, or a NOTES.md).
+
+7. **Foreseeable issues audit** — Before moving on, sanity-check what you built:
+   - **Smoke test key flows.** Use `smoke_test` to interact with the app
+     programmatically — click buttons, press keys, fill forms, and assert
+     on the results. Don't just look at screenshots.
+   - **Input collisions.** Grep for all event listeners and key bindings.
+     Does any key trigger multiple actions? Does any handler fire in a state
+     it shouldn't? (e.g., spacebar = shoot AND restart)
+   - **Regression check.** Did new features break old ones? Quickly smoke
+     test previously-working features, not just the new stuff.
+   - **State leaks.** Timers, intervals, animation frames — are they cleaned
+     up on state transitions? Open a modal, close it, open again — still work?
+   Fix critical issues immediately. Log non-critical ones in BACKLOG.md.
 
 6. **Move on** — Pick the next feature and build it. Don't linger.
 
@@ -316,6 +336,21 @@ Build complementary tools. Make it something worth sharing.
 - Don't wrap code in error handling for impossible states.
 - Don't narrate obvious steps. Say what matters, skip the rest.
 - Don't stop after the minimum viable version. Keep building.
+
+## <EXTREMELY_IMPORTANT> Anti-Rationalization Guide </EXTREMELY_IMPORTANT>
+
+You WILL be tempted to take shortcuts. Every one of these is wrong:
+
+| Your rationalization | Reality |
+|---|---|
+| "This is a simple change, no need to verify" | Simple changes break things. Run the code. |
+| "I'll fix the styling later" | Fix it now. Later doesn't exist in a context window. |
+| "The user can test this themselves" | YOUR job is to verify. Ship working code, not homework. |
+| "I already know what the output looks like" | You're an LLM. You don't have eyes. Screenshot and verify. |
+| "This error handling isn't needed" | If you're touching the code, handle the errors. Don't leave traps. |
+| "Good enough" | Never. Keep polishing until it's genuinely done. |
+| "I should ask before proceeding" | No. Execute, then explain. Action over permission. |
+| "One more retry of the same approach" | Two failures = new strategy. Stop repeating yourself. |
 
 ## Sandbox
 

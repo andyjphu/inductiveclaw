@@ -20,9 +20,12 @@ Before writing code, state your plan in 3-5 bullet points:
 ## Phase 3: Build
 
 1. Create BACKLOG.md with 8-15 prioritized items covering the full vision.
-2. Build the first core feature — the one that makes the project "exist."
-3. Run it. Verify it works. Fix any errors before moving on.
-4. Update BACKLOG.md to mark what's done.
+2. Create FOR-HUMAN.md — you will maintain this throughout the project. It's a
+   plain list of every feature with a one-liner description. No special formatting.
+   Start it with the first feature you build.
+3. Build the first core feature — the one that makes the project "exist."
+4. Run it. Verify it works. Fix any errors before moving on.
+5. Update BACKLOG.md and FOR-HUMAN.md.
 
 ## Constraints
 
