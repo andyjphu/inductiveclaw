@@ -22,6 +22,19 @@ class ClawConfig:
 
 
 @dataclass
+class IdeaRecord:
+    """A completed idea phase."""
+    title: str
+    description: str
+    relationship: str  # "origin", "companion", "rewrite", "extension", etc.
+    branch: str
+    worktree_path: str
+    final_score: int | None = None
+    features: list[str] = field(default_factory=list)
+    iterations: int = 0
+
+
+@dataclass
 class UsageTracker:
     iterations_completed: int = 0
     features_completed: list[str] = field(default_factory=list)
@@ -29,6 +42,11 @@ class UsageTracker:
     quality_history: list[int] = field(default_factory=list)
     started_at: datetime = field(default_factory=datetime.now)
     errors: list[str] = field(default_factory=list)
+
+    # Idea phase tracking
+    current_idea: IdeaRecord | None = None
+    idea_history: list[IdeaRecord] = field(default_factory=list)
+    idea_number: int = 1
 
     @property
     def duration_seconds(self) -> float:

@@ -370,6 +370,50 @@ def create_iclaw_tools(config: ClawConfig):
                 ]
             }
 
+    @tool(
+        "propose_idea",
+        "Propose a new idea phase. Call this when the current idea is complete "
+        "(score >= threshold, ready_to_ship). The new idea gets its own git worktree. "
+        "Only call when you genuinely believe the current work is done and a new "
+        "direction would be more valuable than more polish.",
+        {
+            "title": str,
+            "description": str,
+            "relationship": str,
+            "carries_forward": list[str],
+        },
+    )
+    async def propose_idea(args: dict[str, Any]) -> dict[str, Any]:
+        title = args.get("title", "untitled")
+        desc = args.get("description", "")
+        rel = args.get("relationship", "extension")
+        carries = args.get("carries_forward", [])
+
+        # Write proposal to a file the outer loop reads
+        proposal_path = project / ".iclaw" / "idea_proposal.json"
+        proposal_path.parent.mkdir(parents=True, exist_ok=True)
+        proposal_path.write_text(json.dumps({
+            "title": title,
+            "description": desc,
+            "relationship": rel,
+            "carries_forward": carries,
+            "proposed_at": datetime.now().isoformat(),
+        }, indent=2))
+
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Idea proposed: '{title}' ({rel}). "
+                        f"The outer loop will create a new worktree for this idea. "
+                        f"Finish any final housekeeping on the current idea, then "
+                        f"the next iteration will start in the new workspace."
+                    ),
+                }
+            ]
+        }
+
     return create_sdk_mcp_server(
         name="iclaw-tools",
         version="1.0.0",
@@ -379,5 +423,6 @@ def create_iclaw_tools(config: ClawConfig):
             take_screenshot,
             write_docs,
             smoke_test,
+            propose_idea,
         ],
     )

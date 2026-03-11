@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .config import ClawConfig, UsageTracker
+    from .config import ClawConfig, IdeaRecord, UsageTracker
     from .providers import ProviderRegistry
 
 try:
     from rich.console import Console
     from rich.panel import Panel
+    from rich.rule import Rule
     from rich.table import Table
     from rich.text import Text
 
@@ -160,6 +161,27 @@ def show_result(text: str) -> None:
         print(f"  {text[:300]}")
 
 
+def show_idea_transition(new_idea: IdeaRecord, history: list[IdeaRecord]) -> None:
+    prev = history[-1] if history else None
+    if _has_rich:
+        console.print()
+        console.print(Rule(f"[bold magenta]New Idea: {new_idea.title}[/]", style="magenta"))
+        if prev:
+            console.print(f"  [dim]Previous: {prev.title} — score {prev.final_score}/10, {len(prev.features)} features[/]")
+        console.print(f"  [bold]{new_idea.description}[/]")
+        console.print(f"  [dim]Relationship: {new_idea.relationship} | Branch: {new_idea.branch}[/]")
+        console.print(f"  [dim]Worktree: {new_idea.worktree_path}[/]")
+        console.print()
+    else:
+        print(f"\n{'='*60}")
+        print(f"  NEW IDEA: {new_idea.title}")
+        if prev:
+            print(f"  Previous: {prev.title} — score {prev.final_score}/10")
+        print(f"  {new_idea.description}")
+        print(f"  Branch: {new_idea.branch}")
+        print(f"{'='*60}\n")
+
+
 def show_summary(tracker: UsageTracker) -> None:
     if _has_rich:
         table = Table(show_header=False, box=None, padding=(0, 2))
@@ -171,6 +193,12 @@ def show_summary(tracker: UsageTracker) -> None:
             table.add_row("[bold]Score history[/]", " -> ".join(str(s) for s in tracker.quality_history))
         if tracker.errors:
             table.add_row("[bold]Errors[/]", str(len(tracker.errors)))
+        if tracker.idea_history:
+            ideas = ", ".join(
+                f"{i.title} ({i.final_score}/10)" for i in tracker.idea_history
+            )
+            table.add_row("[bold]Ideas completed[/]", ideas)
+            table.add_row("[bold]Total ideas[/]", str(len(tracker.idea_history) + 1))
         console.print()
         console.print(Panel(table, title="[bold]Summary[/]", border_style="cyan"))
     else:
