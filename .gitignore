@@ -43,3 +43,4 @@ sandbox
 .vscode
 dev
 sandbox-archive
+.venv*
