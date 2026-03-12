@@ -71,9 +71,7 @@ def _warn_no_sandbox(cwd: str) -> None:
     from pathlib import Path
     resolved = Path(cwd).resolve()
 
-    # Count files that could be affected
-    files = list(resolved.rglob("*"))
-    file_count = sum(1 for f in files if f.is_file())
+    # Show top-level dirs (no recursive scan — that hangs on large trees)
     dirs = [d for d in resolved.iterdir() if d.is_dir() and not d.name.startswith(".")]
     dir_names = ", ".join(sorted(d.name for d in dirs)[:8])
     if len(dirs) > 8:
@@ -83,10 +81,8 @@ def _warn_no_sandbox(cwd: str) -> None:
         f"\033[33m"
         f"  Warning: No sandbox directory set (--project / -p flag).\n"
         f"  Agent will use current directory as sandbox: {resolved}\n"
-        f"  Potentially affected: {file_count} files"
-        + (f" in [{dir_names}]" if dir_names else "")
-        + f"\n"
-        f"  To isolate, use: iclaw -p ./sandbox\n"
+        + (f"  Contains: [{dir_names}]\n" if dir_names else "")
+        + f"  To isolate, use: iclaw -p ./sandbox\n"
         f"\033[0m",
         file=sys.stderr,
     )
