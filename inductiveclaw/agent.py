@@ -9,24 +9,34 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from claude_agent_sdk import (
-    query,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    ResultMessage,
-    CLINotFoundError,
-    CLIConnectionError,
-    ProcessError,
-)
-from claude_agent_sdk.types import TextBlock, ToolUseBlock
-
 from . import display
+from .backends import (
+    AgentMessage,
+    AgentResult,
+    AgentTextBlock,
+    AgentToolUseBlock,
+    BackendNotFoundError,
+    BackendProcessError,
+    BackendRateLimitError,
+    create_autonomous_backend,
+)
 from .config import ClawConfig, IdeaRecord, UsageTracker
 from .prompts import SYSTEM_PROMPT, build_iteration_prompt
 from .providers import ProviderRegistry, ProviderStatus
 from .tools import create_iclaw_tools
 
 MAX_CONSECUTIVE_ERRORS = 3
+
+AUTONOMOUS_TOOLS = [
+    "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+    "WebSearch", "WebFetch",
+    "mcp__iclaw-tools__update_backlog",
+    "mcp__iclaw-tools__self_evaluate",
+    "mcp__iclaw-tools__take_screenshot",
+    "mcp__iclaw-tools__write_docs",
+    "mcp__iclaw-tools__smoke_test",
+    "mcp__iclaw-tools__propose_idea",
+]
 
 
 @dataclass
@@ -54,15 +64,12 @@ def _ensure_git_repo(project_dir: str) -> bool:
     p = Path(project_dir)
     if (p / ".git").exists():
         return True
-    # Check if project_dir is inside a repo already
     result = _git("rev-parse", "--git-dir", cwd=project_dir)
     if result.returncode == 0:
         return True
-    # Initialize
     result = _git("init", cwd=project_dir)
     if result.returncode != 0:
         return False
-    # Initial commit so worktrees have something to branch from
     _git("add", "-A", cwd=project_dir)
     _git("commit", "-m", "initial (iclaw)", "--allow-empty", cwd=project_dir)
     return True
@@ -92,65 +99,40 @@ def _commit_idea(project_dir: str, message: str) -> None:
     _git("commit", "-m", message, "--allow-empty", cwd=project_dir)
 
 
-# --- SDK options ---
-
-def _build_sdk_options(
-    config: ClawConfig,
-    tools_server: object,
-    registry: ProviderRegistry,
-    project_dir: str | None = None,
-) -> ClaudeAgentOptions:
-    provider = registry.active
-    assert provider is not None
-
-    cwd = str(Path(project_dir or config.project_dir).resolve())
-    opts = ClaudeAgentOptions(
-        allowed_tools=[
-            "Bash", "Read", "Write", "Edit", "Glob", "Grep",
-            "WebSearch", "WebFetch",
-            "mcp__iclaw-tools__update_backlog",
-            "mcp__iclaw-tools__self_evaluate",
-            "mcp__iclaw-tools__take_screenshot",
-            "mcp__iclaw-tools__write_docs",
-            "mcp__iclaw-tools__smoke_test",
-            "mcp__iclaw-tools__propose_idea",
-        ],
-        permission_mode="bypassPermissions",
-        cwd=cwd,
-        add_dirs=[cwd],
-        max_turns=config.max_turns_per_iteration,
-        mcp_servers={"iclaw-tools": tools_server},
-        system_prompt=SYSTEM_PROMPT,
-        env=provider.get_sdk_env(),
-    )
-    model = config.model or provider.get_model()
-    if model:
-        opts.model = model
-    return opts
-
-
 # --- Single iteration ---
 
 async def _run_single_iteration(
     prompt: str,
-    options: ClaudeAgentOptions,
     config: ClawConfig,
     tracker: UsageTracker,
+    registry: ProviderRegistry,
+    tools_server: object,
+    project_dir: str,
     verbose: bool,
 ) -> IterationResult:
-    """Run one Agent SDK call and extract results."""
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
+    """Run one iteration via the provider's backend."""
+    backend = create_autonomous_backend(
+        provider=registry.active,
+        system_prompt=SYSTEM_PROMPT,
+        allowed_tools=AUTONOMOUS_TOOLS,
+        cwd=project_dir,
+        model=config.model or registry.active.get_model(),
+        max_turns=config.max_turns_per_iteration,
+        mcp_servers={"iclaw-tools": tools_server},
+    )
+
+    async for message in backend.run_iteration(prompt):
+        if isinstance(message, AgentMessage):
             for block in message.content:
-                if isinstance(block, TextBlock) and block.text.strip():
+                if isinstance(block, AgentTextBlock) and block.text.strip():
                     if verbose:
                         display.show_agent_text(block.text)
-                elif isinstance(block, ToolUseBlock):
+                elif isinstance(block, AgentToolUseBlock):
                     display.show_tool_call(block.name, str(block.input)[:100])
 
-        if isinstance(message, ResultMessage):
-            if hasattr(message, "result") and message.result:
-                display.show_result(str(message.result))
+        elif isinstance(message, AgentResult):
+            if message.result:
+                display.show_result(message.result)
 
     return _extract_iteration_results(config, tracker)
 
@@ -203,7 +185,7 @@ def _read_idea_proposal(project_dir: str) -> dict | None:
         return None
     try:
         proposal = json.loads(proposal_path.read_text())
-        proposal_path.unlink()  # consume it
+        proposal_path.unlink()
         return proposal
     except (json.JSONDecodeError, OSError):
         return None
@@ -219,7 +201,6 @@ def _finalize_idea(config: ClawConfig, tracker: UsageTracker) -> None:
     idea.features = list(tracker.features_completed)
     idea.iterations = tracker.iterations_completed
 
-    # Commit the final state
     _commit_idea(
         config.project_dir,
         f"idea/{idea.title}: final (score {idea.final_score or '?'}/10, "
@@ -241,20 +222,16 @@ def _transition_to_idea(
     branch_name = f"idea/{idea_num}-{safe_title}"
     worktree_name = f"{Path(config.project_dir).name}-{safe_title}"
 
-    # Ensure git repo exists for worktree support
     if not _ensure_git_repo(config.project_dir):
         display.show_error(0, Exception("Cannot create worktree: git init failed"))
         return None
 
-    # Commit current state before branching
     _commit_idea(config.project_dir, f"pre-transition to {title}")
 
-    # Create worktree
     new_dir = _create_worktree(config.project_dir, branch_name, worktree_name)
     if new_dir is None:
         return None
 
-    # Record the new idea
     tracker.idea_number = idea_num
     tracker.current_idea = IdeaRecord(
         title=title,
@@ -264,7 +241,6 @@ def _transition_to_idea(
         worktree_path=new_dir,
     )
 
-    # Reset per-idea tracking
     tracker.features_completed = []
     tracker.last_quality_score = None
     tracker.quality_history = []
@@ -297,7 +273,6 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
     """Main autonomous loop with idea-phase transitions."""
     tracker = UsageTracker()
 
-    # Initialize first idea
     tracker.current_idea = IdeaRecord(
         title=config.goal[:40],
         description=config.goal,
@@ -333,39 +308,34 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
             display.show_iteration_header(iteration, tracker)
 
             prompt = build_iteration_prompt(config, iteration, tracker)
-            options = _build_sdk_options(
-                config, tools_server, registry,
-                project_dir=current_project_dir,
-            )
 
             try:
                 result = await _run_single_iteration(
-                    prompt, options, config, tracker, config.verbose
+                    prompt, config, tracker, registry, tools_server,
+                    current_project_dir, config.verbose,
                 )
                 consecutive_errors = 0
             except KeyboardInterrupt:
                 display.show_interrupted()
                 break
-            except CLINotFoundError:
+            except BackendNotFoundError:
                 display.show_error(
                     iteration,
                     Exception("Claude Code CLI not found. Install it: "
                               "npm install -g @anthropic-ai/claude-code"),
                 )
                 break
-            except (CLIConnectionError, ProcessError) as e:
-                err_str = str(e).lower()
-                if "rate" in err_str and "limit" in err_str:
-                    new_provider = registry.handle_rate_limit()
-                    if new_provider and new_provider.status == ProviderStatus.CONNECTED:
-                        display.show_error(iteration, Exception(
-                            f"Rate limited. Cycling to {new_provider.display_name}..."
-                        ))
-                        continue
-                    else:
-                        display.show_error(iteration, Exception("All providers exhausted."))
-                        break
-
+            except BackendRateLimitError:
+                new_provider = registry.handle_rate_limit()
+                if new_provider and new_provider.status == ProviderStatus.CONNECTED:
+                    display.show_error(iteration, Exception(
+                        f"Rate limited. Cycling to {new_provider.display_name}..."
+                    ))
+                    continue
+                else:
+                    display.show_error(iteration, Exception("All providers exhausted."))
+                    break
+            except (BackendProcessError, Exception) as e:
                 consecutive_errors += 1
                 tracker.errors.append(f"Iteration {iteration}: {e}")
                 display.show_error(iteration, e)
@@ -375,32 +345,10 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
                     ))
                     break
                 continue
-            except Exception as e:
-                err_str = str(e).lower()
-                if "rate" in err_str and "limit" in err_str:
-                    new_provider = registry.handle_rate_limit()
-                    if new_provider and new_provider.status == ProviderStatus.CONNECTED:
-                        display.show_error(iteration, Exception(
-                            f"Rate limited. Cycling to {new_provider.display_name}..."
-                        ))
-                        continue
-                    else:
-                        display.show_error(iteration, Exception("All providers exhausted."))
-                        break
-
-                consecutive_errors += 1
-                tracker.errors.append(f"Iteration {iteration}: {e}")
-                display.show_error(iteration, e)
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    break
-                continue
 
             tracker.iterations_completed = iteration
 
             # --- Idea transition check ---
-            # When the agent calls propose_idea, it writes a proposal file.
-            # When quality threshold is met, we also inject the proposal prompt.
-            # Either way, if a proposal exists, transition.
             if result.idea_proposed:
                 proposal = _read_idea_proposal(current_project_dir)
                 if proposal:
@@ -408,18 +356,11 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
                     new_dir = _transition_to_idea(config, tracker, proposal)
                     if new_dir:
                         current_project_dir = new_dir
-                        # Update config so prompts/tools use new dir
                         config.project_dir = new_dir
                         tools_server = create_iclaw_tools(config)
-                        # Reset iteration counter for the new idea
-                        # (but keep total_iterations for the overall session)
-                        continue  # next iteration starts in new worktree
-                    # If worktree creation failed, keep going in current dir
+                        continue
 
-            # When quality threshold is reached but no idea proposed yet,
-            # inject the proposal prompt on the next iteration
             if result.should_stop and not result.idea_proposed:
-                # Don't actually stop — inject idea_proposal prompt instead
                 result.should_stop = False
                 tracker._pending_idea_prompt = True  # type: ignore[attr-defined]
 
@@ -427,7 +368,6 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
         signal.signal(signal.SIGINT, prev_handler)
         signal.signal(signal.SIGTERM, prev_term)
 
-    # Finalize the last idea
     if tracker.current_idea:
         _commit_idea(
             current_project_dir,

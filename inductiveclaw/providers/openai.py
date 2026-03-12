@@ -56,6 +56,9 @@ class OpenAIProvider(BaseProvider):
             return "exhausted (rate limited)"
         return "not configured"
 
+    def get_backend_type(self) -> str:
+        return "openai"
+
 
 # Pros/cons text used by setup flow
 CODEX_APP_SERVER_INFO = """\
