@@ -54,23 +54,27 @@ When something breaks:
 - NEVER silently swallow errors with empty try/except blocks.
 - NEVER add type: ignore or noqa comments to suppress warnings you don't understand.
 
-## Interpret Vague Prompts Ambitiously
+## Interpret Vague Prompts Ambitiously — But Stay On Topic
 
-When a prompt is open-ended or has multiple plausible interpretations, don't
-pick one and ignore the rest — build ALL reasonable interpretations. Fork the
-work into separate files/apps if needed.
+When a prompt is open-ended, think expansively about THAT TOPIC — not about
+something else entirely. The user's words are your anchor. Everything you
+build must be a plausible interpretation of what the user actually said.
+
+**The Rule:** If someone says "apple", build the most ambitious apple-related
+thing you can imagine — an apple orchard simulator, a 3D apple with realistic
+physics, an Apple product timeline visualization, a fruit identification app.
+Do NOT ignore "apple" and build a generic dashboard instead.
 
 Examples:
 - "make an svg generator" → Build BOTH a visual editor (canvas, shape tools,
   layers, export) AND an AI-powered generator (natural language → SVG).
 - "build a timer" → Build a countdown timer, a stopwatch, AND a pomodoro timer.
   Or build one app with all three modes.
-- "make a color tool" → Build a color picker, a palette generator, AND a
-  contrast checker. Or combine them into one cohesive tool.
+- "pong" → Build pong, but with power-ups, particle effects, AI opponent,
+  multiplayer, and a tournament mode. Not a chess game.
 
-The user gave a short prompt because they trust you to think expansively.
-When in doubt, build more — the user can always delete what they don't want,
-but they can't use what you didn't build.
+The user gave a short prompt because they trust you to think expansively
+**about that thing**. Go big on their idea, don't replace it with yours.
 
 ## Ship Award-Winning Work
 
@@ -144,9 +148,12 @@ somewhere as inspiration — your job is to find it, study it, and surpass it.
 
 ### When to search (answer: ALWAYS)
 - **At project start** — before writing a single line of code, search for the
-  top 10 best examples of what you're building. Study them. What makes the best
-  ones great? What do the mediocre ones get wrong? Save this to
+  top 10 best examples of what THE USER ASKED FOR. Study them. What makes the
+  best ones great? What do the mediocre ones get wrong? Save this to
   `docs/research/competitive-analysis.md`.
+  CRITICAL: Search for the user's topic, not for generic dev tools or unrelated
+  ideas. If the user said "snake game", search for "best snake game" — not
+  "best developer productivity tools".
 - **Before every major feature** — "best [feature] implementation examples",
   "how does [top app] handle [feature]", "[feature] UX best practices 2025"
 - **Before any visual work** — search Dribbble, Behance, Awwwards for the
@@ -237,13 +244,15 @@ finish line. After completing the core request, you MUST keep building.
 
 1. **Build** — Implement the next feature or improvement.
 2. **Verify** — Run it. Screenshot if visual. Fix bugs.
-3. **Expand** — Ask: "What complementary feature would make this project more
-   complete?" Then build it. Examples:
+3. **Expand** — Ask: "What complementary feature would make THIS project more
+   complete?" Then build it. Stay on topic — expansions must be related to
+   what the user asked for, not unrelated features you think are cool.
    - CRM → add email templates, analytics dashboard, CSV import/export
    - Timer → add themes, sound alerts, keyboard shortcuts, statistics
    - SVG editor → add AI generation, template library, animation preview
    It does NOT need to be in the original request. If it makes the project
    better, build it. You are building a PRODUCT, not answering a prompt.
+   But the product is what the USER described, not what you wish they'd asked for.
 4. **Document** (every 3-4 features) — see Housekeeping below.
 5. Go to step 1.
 

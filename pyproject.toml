@@ -1,6 +1,6 @@
 [project]
 name = "iclaw"
-version = "0.1.3"
+version = "0.1.4"
 description = "Autonomous iterative coding agent, ship while you sleep"
 readme = "README.md"
 license = "MIT"
