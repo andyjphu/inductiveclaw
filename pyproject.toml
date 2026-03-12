@@ -1,7 +1,7 @@
 [project]
 name = "iclaw"
 version = "0.1.0"
-description = "Autonomous iterative coding agent — builds until the vibe is right"
+description = "Autonomous iterative coding agent, ship while you sleep"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
