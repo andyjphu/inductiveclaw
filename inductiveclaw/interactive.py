@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from .backends import (
     create_interactive_backend,
 )
 from .providers import ProviderRegistry, ProviderStatus
+from .sessions import SessionRecord, SessionStore
 from .setup import run_setup, _show_status
 
 _INTERACTIVE_PROMPT = files("inductiveclaw.prompts").joinpath("interactive.md").read_text()
@@ -47,6 +49,8 @@ SLASH_COMMANDS = {
     "/config": "Re-run provider setup",
     "/status": "Show provider status",
     "/cost": "Show session cost",
+    "/sessions": "List saved sessions",
+    "/resume": "Resume a saved session (/resume <id or #>)",
     "/clear": "Clear conversation (start new session)",
     "/quit": "Exit iclaw",
 }
@@ -281,6 +285,7 @@ async def run_interactive(
     cwd: str = ".",
     model_override: str | None = None,
     auto_continue: bool = True,
+    resume_session_id: str | None = None,
 ) -> None:
     """Main interactive REPL loop with Claude Code-style UX."""
     cwd = str(Path(cwd).resolve())
@@ -288,6 +293,24 @@ async def run_interactive(
     cost_ref = [0.0]
     turns_ref = [0]
     session_id: str | None = None
+
+    store = SessionStore()
+    active_record: SessionRecord | None = None
+    restore_msgs: list | None = None
+
+    # Resume from a previous session if requested
+    if resume_session_id:
+        active_record = store.load(resume_session_id)
+        if active_record:
+            cost_ref[0] = active_record.total_cost_usd
+            turns_ref[0] = active_record.total_turns
+            if active_record.backend_type == "claude":
+                session_id = active_record.session_id
+            else:
+                restore_msgs = active_record.messages
+
+    # Clean up old sessions on startup
+    store.cleanup()
 
     session = _build_session(registry, cost_ref, turns_ref, cwd)
 
@@ -311,6 +334,17 @@ async def run_interactive(
                         _clear_screen()
                         display.show_banner_interactive(registry, cwd)
                         first_connect = False
+
+                    # Restore message history for non-Claude backends
+                    if restore_msgs is not None:
+                        backend.restore_messages(restore_msgs)
+                        if active_record:
+                            backend._session_id = active_record.session_id
+                        console.print(Text(
+                            f"  ↻ Resumed session: {active_record.title if active_record else ''}",
+                            style="green",
+                        ))
+                        restore_msgs = None  # Only restore once
 
                     while True:
                         try:
@@ -344,8 +378,45 @@ async def run_interactive(
                         if cmd == "/cost":
                             _show_cost(cost_ref[0], turns_ref[0])
                             continue
+                        if cmd == "/sessions clean":
+                            removed = store.cleanup(retention_days=7)
+                            console.print(f"  [dim]Removed {removed} old session(s).[/]")
+                            continue
+                        if cmd == "/sessions":
+                            _show_sessions(store)
+                            continue
+                        if cmd.startswith("/resume"):
+                            parts = cmd.split(maxsplit=1)
+                            if len(parts) < 2:
+                                console.print("  [dim]Usage: /resume <session_id or #>[/]")
+                                continue
+                            target = parts[1].strip()
+                            record = store.load(target)
+                            if not record:
+                                sessions = store.list_sessions()
+                                try:
+                                    idx = int(target) - 1
+                                    if 0 <= idx < len(sessions):
+                                        record = store.load(sessions[idx]["session_id"])
+                                except ValueError:
+                                    pass
+                            if record:
+                                active_record = record
+                                cost_ref[0] = record.total_cost_usd
+                                turns_ref[0] = record.total_turns
+                                if record.backend_type == "claude":
+                                    session_id = record.session_id
+                                    restore_msgs = None
+                                else:
+                                    session_id = None
+                                    restore_msgs = record.messages
+                                console.print(f"  [green]Resuming: {record.title}[/]")
+                                break  # break inner loop to reconnect
+                            console.print("  [red]Session not found.[/]")
+                            continue
                         if cmd == "/clear":
                             session_id = None
+                            active_record = None
                             _clear_screen()
                             display.show_banner_interactive(registry, cwd)
                             break
@@ -354,6 +425,11 @@ async def run_interactive(
                         try:
                             await backend.send_message(user_input)
                             stop = await _run_agent_turn(backend, cost_ref, turns_ref)
+                            active_record = _auto_save(
+                                store, backend, active_record, registry,
+                                model_override, cwd, cost_ref, turns_ref,
+                                user_input,
+                            )
 
                             while auto_continue and stop == "end_turn":
                                 console.print(Text(
@@ -378,8 +454,16 @@ async def run_interactive(
                                     "sandbox. Do NOT use absolute paths or .. traversal."
                                 )
                                 stop = await _run_agent_turn(backend, cost_ref, turns_ref)
+                                active_record = _auto_save(
+                                    store, backend, active_record, registry,
+                                    model_override, cwd, cost_ref, turns_ref,
+                                )
 
                         except (KeyboardInterrupt, asyncio.CancelledError):
+                            # Save on interrupt before breaking
+                            if backend.session_id and active_record:
+                                active_record.messages = backend.get_messages()
+                                store.save(active_record)
                             console.print(Text("\n  ⏹ interrupted", style="bold yellow"))
                             _show_separator()
                             break
@@ -568,3 +652,70 @@ async def _run_agent_turn(
 
 def _show_cost(total_cost: float, total_turns: int) -> None:
     console.print(f"  [dim]Session cost: ${total_cost:.4f} | Turns: {total_turns}[/]")
+
+
+def _show_sessions(store: SessionStore) -> None:
+    """Display a table of saved sessions."""
+    sessions = store.list_sessions()
+    if not sessions:
+        console.print("  [dim]No saved sessions.[/]")
+        return
+    from rich.table import Table
+    table = Table(show_header=True, border_style="dim")
+    table.add_column("#", style="bold")
+    table.add_column("Title")
+    table.add_column("Provider")
+    table.add_column("Cost", justify="right")
+    table.add_column("Turns", justify="right")
+    table.add_column("Updated")
+    for i, s in enumerate(sessions[:20], 1):
+        table.add_row(
+            str(i),
+            s.get("title", "Untitled")[:40],
+            s.get("provider_id", "?"),
+            f"${s.get('total_cost_usd', 0):.4f}",
+            str(s.get("total_turns", 0)),
+            s.get("updated_at", "?")[:16],
+        )
+    console.print(table)
+    console.print("  [dim]Use /resume <#> to continue a session.[/]")
+
+
+def _auto_save(
+    store: SessionStore,
+    backend: InteractiveBackend,
+    active_record: SessionRecord | None,
+    registry: ProviderRegistry,
+    model_override: str | None,
+    cwd: str,
+    cost_ref: list[float],
+    turns_ref: list[int],
+    first_user_input: str | None = None,
+) -> SessionRecord:
+    """Save session state after each turn. Returns the (possibly new) record."""
+    if active_record is None:
+        sid = backend.session_id or f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        provider = registry.active
+        backend_type = "claude"
+        if hasattr(provider, "id"):
+            pid = provider.id.value
+            if pid == "openai":
+                backend_type = "openai"
+            elif pid == "gemini":
+                backend_type = "gemini"
+        active_record = SessionRecord(
+            session_id=sid,
+            backend_type=backend_type,
+            provider_id=getattr(provider.id, "value", "unknown") if hasattr(provider, "id") else "unknown",
+            model=model_override or (provider.get_model() if provider else "default"),
+            cwd=cwd,
+            created_at=datetime.now().isoformat(),
+            updated_at=datetime.now().isoformat(),
+            title=SessionStore.extract_title(first_user_input) if first_user_input else "Untitled",
+        )
+
+    active_record.total_cost_usd = cost_ref[0]
+    active_record.total_turns = turns_ref[0]
+    active_record.messages = backend.get_messages()
+    store.save(active_record)
+    return active_record
