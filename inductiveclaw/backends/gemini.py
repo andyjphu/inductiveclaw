@@ -297,6 +297,68 @@ class GeminiInteractiveBackend(InteractiveBackend):
         self._client = None
         self._contents = []
 
+    def get_messages(self) -> list[dict[str, Any]] | None:
+        """Serialize Gemini contents to JSON-safe dicts for persistence."""
+        if not self._contents:
+            return None
+        serialized: list[dict[str, Any]] = []
+        for item in self._contents:
+            if isinstance(item, str):
+                serialized.append({"type": "user_text", "text": item})
+            elif hasattr(item, "parts"):
+                parts_data = []
+                for part in item.parts:
+                    if hasattr(part, "text") and part.text:
+                        parts_data.append({"type": "text", "text": part.text})
+                    elif hasattr(part, "function_call") and part.function_call:
+                        fc = part.function_call
+                        parts_data.append({
+                            "type": "function_call",
+                            "name": fc.name,
+                            "args": dict(fc.args) if fc.args else {},
+                        })
+                    elif hasattr(part, "function_response") and part.function_response:
+                        fr = part.function_response
+                        parts_data.append({
+                            "type": "function_response",
+                            "name": fr.name,
+                            "response": dict(fr.response) if fr.response else {},
+                        })
+                serialized.append({
+                    "type": "content",
+                    "role": getattr(item, "role", "model"),
+                    "parts": parts_data,
+                })
+        return serialized
+
+    def restore_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Deserialize stored dicts back to Gemini content objects."""
+        from google.genai import types
+
+        restored: list[Any] = []
+        for item in messages:
+            item_type = item.get("type", "")
+            if item_type == "user_text":
+                restored.append(item["text"])
+            elif item_type == "content":
+                parts = []
+                for p in item.get("parts", []):
+                    p_type = p.get("type", "")
+                    if p_type == "text":
+                        parts.append(types.Part.from_text(text=p["text"]))
+                    elif p_type == "function_call":
+                        parts.append(types.Part.from_function_call(
+                            name=p["name"], args=p.get("args", {}),
+                        ))
+                    elif p_type == "function_response":
+                        parts.append(types.Part.from_function_response(
+                            name=p["name"], response=p.get("response", {}),
+                        ))
+                restored.append(types.Content(
+                    role=item.get("role", "model"), parts=parts,
+                ))
+        self._contents = restored
+
     @property
     def session_id(self) -> Optional[str]:
         return self._session_id

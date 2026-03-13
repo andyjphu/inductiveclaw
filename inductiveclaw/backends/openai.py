@@ -218,6 +218,14 @@ class OpenAIInteractiveBackend(InteractiveBackend):
         self._client = None
         self._messages = []
 
+    def get_messages(self) -> list[dict[str, Any]] | None:
+        """Return conversation history for persistence."""
+        return list(self._messages) if self._messages else None
+
+    def restore_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Restore conversation history from a previous session."""
+        self._messages = list(messages)
+
     @property
     def session_id(self) -> Optional[str]:
         return self._session_id

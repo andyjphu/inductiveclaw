@@ -37,6 +37,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     inter = parser.add_argument_group("interactive mode")
     inter.add_argument("--no-auto", action="store_true", help="Disable auto-continue (agent stops after each turn)")
+    inter.add_argument("--resume", default=None, metavar="SESSION_ID", help="Resume a previous interactive session")
+    inter.add_argument("--sessions", action="store_true", help="List saved sessions and exit")
 
     out = parser.add_argument_group("output")
     out.add_argument("-q", "--quiet", action="store_true", help="Minimal output")
@@ -92,6 +94,25 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     registry = ProviderRegistry()
 
+    # --sessions: list saved sessions and exit
+    if args.sessions:
+        from .sessions import SessionStore
+        store = SessionStore()
+        sessions = store.list_sessions()
+        if not sessions:
+            print("No saved sessions.")
+        else:
+            for i, s in enumerate(sessions[:20], 1):
+                title = s.get("title", "Untitled")[:50]
+                sid = s.get("session_id", "?")
+                provider = s.get("provider_id", "?")
+                cost = s.get("total_cost_usd", 0)
+                turns = s.get("total_turns", 0)
+                updated = s.get("updated_at", "?")[:16]
+                print(f"  {i}. [{provider}] {title}  (${cost:.4f}, {turns} turns, {updated})")
+                print(f"     ID: {sid}")
+        return
+
     # --setup: run guided setup and exit
     if args.setup:
         _ensure_provider(registry)  # load existing config first
@@ -136,7 +157,10 @@ def main(argv: list[str] | None = None) -> None:
             cwd = "."
             _warn_no_sandbox(cwd)
         try:
-            anyio.run(run_interactive, registry, cwd, args.model, not args.no_auto)
+            anyio.run(
+                run_interactive, registry, cwd, args.model,
+                not args.no_auto, args.resume,
+            )
         except KeyboardInterrupt:
             pass
 

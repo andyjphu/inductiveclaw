@@ -164,6 +164,21 @@ class InteractiveBackend(ABC):
     def session_id(self) -> str | None:
         """Current session ID for resume capability."""
 
+    def get_messages(self) -> list[dict[str, Any]] | None:
+        """Return serializable message history for persistence.
+
+        Returns None for backends that manage state externally (Claude).
+        Override in backends that maintain local conversation history.
+        """
+        return None
+
+    def restore_messages(self, messages: list[dict[str, Any]]) -> None:
+        """Restore message history from a previous session.
+
+        No-op for backends that manage state externally (Claude).
+        Override in backends that maintain local conversation history.
+        """
+
     async def __aenter__(self) -> InteractiveBackend:
         await self.start()
         return self
