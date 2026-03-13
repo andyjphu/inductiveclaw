@@ -95,6 +95,17 @@ def create_autonomous_backend(
             max_turns=max_turns,
         )
 
+    if backend_type == "gemini":
+        from .gemini import GeminiAutonomousBackend
+
+        return GeminiAutonomousBackend(
+            system_prompt=system_prompt,
+            project_dir=resolved_cwd,
+            env=provider.get_sdk_env(),
+            model=model or provider.get_model() or "gemini-2.5-pro",
+            max_turns=max_turns,
+        )
+
     raise NotImplementedError(
         f"Backend '{backend_type}' is not yet implemented. "
         f"Install the provider's optional dependencies and try again."
@@ -132,6 +143,16 @@ def create_interactive_backend(
             project_dir=resolved_cwd,
             env=provider.get_sdk_env(),
             model=model or provider.get_model() or "o3",
+        )
+
+    if backend_type == "gemini":
+        from .gemini import GeminiInteractiveBackend
+
+        return GeminiInteractiveBackend(
+            system_prompt=system_prompt,
+            project_dir=resolved_cwd,
+            env=provider.get_sdk_env(),
+            model=model or provider.get_model() or "gemini-2.5-pro",
         )
 
     raise NotImplementedError(

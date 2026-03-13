@@ -33,6 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
+gemini = ["google-genai>=1.0"]
 screenshot = ["playwright>=1.40"]
 test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
