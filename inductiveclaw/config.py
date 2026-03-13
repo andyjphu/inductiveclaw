@@ -19,6 +19,7 @@ class ClawConfig:
     dev_server_cmd: str | None = None
     verbose: bool = True
     eval_frequency: int = 3
+    budget_usd: float | None = None
 
 
 @dataclass
@@ -42,6 +43,10 @@ class UsageTracker:
     quality_history: list[int] = field(default_factory=list)
     started_at: datetime = field(default_factory=datetime.now)
     errors: list[str] = field(default_factory=list)
+
+    # Cost tracking
+    total_cost_usd: float = 0.0
+    total_turns: int = 0
 
     # Idea phase tracking
     current_idea: IdeaRecord | None = None
