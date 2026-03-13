@@ -22,6 +22,7 @@ from .base import (
     InteractiveBackend,
     InteractiveMessage,
 )
+from .costs import estimate_cost
 from .tool_executor import ToolExecutor, get_all_tool_schemas
 
 
@@ -187,6 +188,7 @@ class OpenAIAutonomousBackend(AutonomousBackend):
             stop_reason=choice.finish_reason or "stop",
             num_turns=turns,
             usage=usage,
+            cost_usd=estimate_cost(self._model, usage),
         )
 
 
@@ -332,6 +334,7 @@ class OpenAIInteractiveBackend(InteractiveBackend):
             stop_reason="end_turn",
             usage=usage,
             session_id=self._session_id,
+            cost_usd=estimate_cost(self._model, usage),
         )
 
     async def close(self) -> None:

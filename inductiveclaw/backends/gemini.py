@@ -12,6 +12,7 @@ from .base import (
     AutonomousBackend, AutonomousMessage, BackendConnectionError,
     BackendRateLimitError, InteractiveBackend, InteractiveMessage,
 )
+from .costs import estimate_cost
 from .tool_executor import ToolExecutor, get_all_tool_schemas
 
 
@@ -156,6 +157,7 @@ class GeminiAutonomousBackend(AutonomousBackend):
             stop_reason="stop",
             num_turns=turns,
             usage=usage,
+            cost_usd=estimate_cost(self._model, usage),
         )
 
 
@@ -288,6 +290,7 @@ class GeminiInteractiveBackend(InteractiveBackend):
             stop_reason="end_turn",
             usage=usage,
             session_id=self._session_id,
+            cost_usd=estimate_cost(self._model, usage),
         )
 
     async def close(self) -> None:
