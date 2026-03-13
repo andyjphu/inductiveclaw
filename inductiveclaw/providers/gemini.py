@@ -54,6 +54,9 @@ class GeminiProvider(BaseProvider):
             return "exhausted (rate limited)"
         return "not configured"
 
+    def get_backend_type(self) -> str:
+        return "gemini"
+
 
 def _has_google_oauth_credentials() -> bool:
     """Check if Google OAuth client_secret.json exists."""

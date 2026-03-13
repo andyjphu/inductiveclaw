@@ -107,3 +107,7 @@ class BaseProvider(ABC):
     @abstractmethod
     def status_line(self) -> str:
         """One-line status for display."""
+
+    @abstractmethod
+    def get_backend_type(self) -> str:
+        """Return backend identifier: 'claude', 'openai', or 'gemini'."""

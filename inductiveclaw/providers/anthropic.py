@@ -71,6 +71,9 @@ class AnthropicProvider(BaseProvider):
             return "exhausted (rate limited)"
         return "not configured"
 
+    def get_backend_type(self) -> str:
+        return "claude"
+
 
 def _has_claude_cli() -> bool:
     return shutil.which("claude") is not None

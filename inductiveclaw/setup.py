@@ -65,10 +65,8 @@ def run_setup(registry: ProviderRegistry) -> None:
 
     # Configure providers
     _setup_anthropic(registry)
-
-    # Future features
-    _print("\n[dim]OpenAI (Codex) — coming soon[/dim]" if _has_rich else "\nOpenAI (Codex) — coming soon")
-    _print("[dim]Gemini (Google) — coming soon[/dim]\n" if _has_rich else "Gemini (Google) — coming soon\n")
+    _setup_openai(registry)
+    _setup_gemini(registry)
 
     # Provider selection
     configured = registry.configured_providers()

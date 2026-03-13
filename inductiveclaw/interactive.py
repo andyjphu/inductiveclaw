@@ -3,35 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import sys
 from importlib.resources import files
 from pathlib import Path
-
-from claude_agent_sdk import (
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    ResultMessage,
-    CLINotFoundError,
-    ProcessError,
-)
-from claude_agent_sdk.types import (
-    TextBlock,
-    ThinkingBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    StreamEvent,
-    TaskStartedMessage,
-    TaskProgressMessage,
-    TaskNotificationMessage,
-    SystemMessage,
-    PermissionResultAllow,
-    PermissionResultDeny,
-    ToolPermissionContext,
-    SandboxSettings,
-)
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -44,6 +18,23 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style as PTStyle
 
 from . import display
+from .backends import (
+    AgentMessage,
+    AgentResult,
+    AgentStreamEvent,
+    AgentTaskNotification,
+    AgentTaskProgress,
+    AgentTaskStarted,
+    AgentTextBlock,
+    AgentThinkingBlock,
+    AgentToolResultBlock,
+    AgentToolUseBlock,
+    BackendNotFoundError,
+    BackendProcessError,
+    BackendRateLimitError,
+    InteractiveBackend,
+    create_interactive_backend,
+)
 from .providers import ProviderRegistry, ProviderStatus
 from .setup import run_setup, _show_status
 
@@ -59,176 +50,6 @@ SLASH_COMMANDS = {
     "/clear": "Clear conversation (start new session)",
     "/quit": "Exit iclaw",
 }
-
-
-# --- Sandbox enforcement ---
-
-_FILE_WRITE_TOOLS = {"Write", "Edit"}
-_FILE_READ_TOOLS = {"Read"}
-_FILE_ALL_TOOLS = _FILE_WRITE_TOOLS | _FILE_READ_TOOLS | {"Glob", "Grep"}
-
-
-def _make_sandbox_guard(project_dir: str):
-    """Create a can_use_tool callback that enforces sandbox boundaries.
-
-    Simple rule: everything must stay inside project_dir. No exceptions.
-    """
-    resolved = Path(project_dir).resolve()
-    resolved_str = str(resolved)
-
-    def _in_sandbox(p: str) -> bool:
-        try:
-            target = str(Path(p).resolve())
-            return target == resolved_str or target.startswith(resolved_str + os.sep)
-        except (ValueError, OSError):
-            return False
-
-    async def guard(
-        tool_name: str,
-        tool_input: dict,
-        context: ToolPermissionContext,
-    ) -> PermissionResultAllow | PermissionResultDeny:
-
-        # --- File tools: must be inside sandbox ---
-        if tool_name in _FILE_WRITE_TOOLS | _FILE_READ_TOOLS:
-            file_path = tool_input.get("file_path", "")
-            if file_path and not _in_sandbox(file_path):
-                return PermissionResultDeny(
-                    behavior="deny",
-                    message=f"Sandbox: {tool_name} blocked — {file_path} "
-                            f"is outside sandbox ({project_dir})",
-                )
-
-        if tool_name in ("Glob", "Grep"):
-            search_path = tool_input.get("path", "")
-            if search_path and not _in_sandbox(search_path):
-                return PermissionResultDeny(
-                    behavior="deny",
-                    message=f"Sandbox: {tool_name} blocked — {search_path} "
-                            f"is outside sandbox ({project_dir})",
-                )
-
-        # --- Bash: no sudo, no absolute paths outside sandbox, no parent traversal ---
-        if tool_name == "Bash":
-            cmd = tool_input.get("command", "").strip()
-            if not cmd:
-                return PermissionResultAllow(behavior="allow")
-
-            if "sudo" in cmd.split():
-                return PermissionResultDeny(
-                    behavior="deny",
-                    message="Sandbox: sudo is not allowed",
-                )
-
-            # Block parent directory traversal
-            if ".." in cmd:
-                return PermissionResultDeny(
-                    behavior="deny",
-                    message="Sandbox: parent directory traversal (..) is not allowed",
-                )
-
-            # Block absolute paths outside sandbox
-            for word in cmd.split():
-                if word.startswith("/") and not _in_sandbox(word):
-                    return PermissionResultDeny(
-                        behavior="deny",
-                        message=f"Sandbox: Bash blocked — {word} is outside sandbox",
-                    )
-
-        return PermissionResultAllow(behavior="allow")
-
-    return guard
-
-
-def _write_sandbox_settings(project_dir: str) -> None:
-    """Write a .claude/settings.json in the project directory to enforce sandbox.
-
-    This is critical because the OS-level sandbox only restricts Bash commands.
-    Write/Edit/Read/Glob/Grep are handled by Claude Code's permission system.
-    The can_use_tool callback only applies to the main process — sub-agents
-    (Agent tool) spawn separate CLI processes that don't inherit our callback.
-    The .claude/settings.json is read by ALL CLI processes including sub-agents.
-    """
-    claude_dir = Path(project_dir) / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    settings_path = claude_dir / "settings.json"
-
-    # Simple rule: agent can ONLY operate inside the sandbox directory.
-    # No access to iclaw source, no parent dirs, nothing outside.
-    #
-    # Claude Code permission rule syntax:
-    #   //path  = absolute filesystem path (// prefix, NOT triple slash)
-    #   ../path = parent directory traversal
-    #   path    = relative to cwd (sandbox dir)
-    #   deny evaluates before allow; first match wins.
-    #
-    # Bash rules are NOT in settings.json — can_use_tool is the single
-    # authority for Bash permissions (main process). Sub-agents get Bash
-    # protection from OS sandbox (Seatbelt/bubblewrap) + CLAUDE.md rules.
-    # See: https://github.com/anthropics/claude-code/issues/22665
-    resolved_str = str(Path(project_dir).resolve())
-    settings = {
-        "permissions": {
-            "deny": [
-                # Block all absolute path access (// prefix = absolute path)
-                "Read(//**)",
-                "Edit(//**)",
-                "Write(//**)",
-                # Block parent directory traversal
-                "Read(../**)",
-                "Edit(../**)",
-                "Write(../**)",
-            ],
-            "allow": [
-                # Allow sandbox absolute path explicitly (so deny // doesn't block it)
-                # // prefix means "absolute path from root", so //Users/... matches /Users/...
-                # resolved_str starts with /, so strip it to avoid triple slash
-                f"Read(//{resolved_str.lstrip('/')}/**)",
-                f"Edit(//{resolved_str.lstrip('/')}/**)",
-                f"Write(//{resolved_str.lstrip('/')}/**)",
-                # Allow relative paths (within cwd = sandbox)
-                "Read(**)",
-                "Edit(**)",
-                "Write(**)",
-                "Glob(**)",
-                "Grep(**)",
-            ],
-        },
-    }
-
-    # Only write if settings don't exist or differ
-    if settings_path.exists():
-        try:
-            existing = json.loads(settings_path.read_text())
-            if existing == settings:
-                return
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-
-    # Also write a CLAUDE.md that sub-agents read automatically.
-    # This is critical because settings.json inheritance is buggy for sub-agents.
-    claude_md = Path(project_dir) / "CLAUDE.md"
-    sandbox_rules = (
-        f"# Sandbox Rules\n\n"
-        f"You are running inside a sandboxed InductiveClaw session.\n\n"
-        f"**CRITICAL: ALL file operations MUST stay within this directory:**\n"
-        f"`{resolved_str}`\n\n"
-        f"- NEVER read, write, edit, or create files outside this directory\n"
-        f"- NEVER use absolute paths (like /Users/...) — use relative paths only\n"
-        f"- NEVER use `..` to access parent directories\n"
-        f"- NEVER use `sudo` or modify system files\n"
-        f"- NEVER run `find`, `ls`, `cat`, or any command on paths outside this directory\n"
-        f"- Install dependencies locally (npm install, pip install in a venv)\n"
-        f"- If you need to explore, explore WITHIN this directory only\n"
-    )
-    if not claude_md.exists() or "Sandbox Rules" not in claude_md.read_text():
-        if claude_md.exists():
-            existing = claude_md.read_text()
-            claude_md.write_text(sandbox_rules + "\n" + existing)
-        else:
-            claude_md.write_text(sandbox_rules)
 
 
 def _clear_screen() -> None:
@@ -247,18 +68,15 @@ class _ThinkingSpinner:
         self._visible = False
 
     def start(self) -> None:
-        """Show animated spinner. Safe to call multiple times."""
         if self._task and not self._task.done():
-            return  # already spinning
+            return
         self._task = asyncio.create_task(self._spin())
 
     def stop(self) -> None:
-        """Clear spinner line and cancel animation."""
         if self._task and not self._task.done():
             self._task.cancel()
             self._task = None
         if self._visible:
-            # Move to start of line, clear it
             sys.stdout.write("\r\033[2K")
             sys.stdout.flush()
             self._visible = False
@@ -312,7 +130,7 @@ def _show_thinking(text: str) -> None:
     console.print(Text(f"  ✻ {preview}", style="dim italic"))
 
 
-def _show_tool_result(block: ToolResultBlock) -> None:
+def _show_tool_result(block: AgentToolResultBlock) -> None:
     """Show tool result — only errors get detail, success is silent."""
     if not block.is_error:
         return
@@ -351,13 +169,13 @@ def _show_separator() -> None:
     console.print(Text(line, style="dim"))
 
 
-def _show_task_started(msg: TaskStartedMessage) -> None:
+def _show_task_started(msg: AgentTaskStarted) -> None:
     desc = msg.description[:80] if msg.description else "sub-agent"
     task_type = f" ({msg.task_type})" if msg.task_type else ""
     console.print(Text(f"  ◉ Task started: {desc}{task_type}", style="bold magenta"))
 
 
-def _show_task_progress(msg: TaskProgressMessage) -> None:
+def _show_task_progress(msg: AgentTaskProgress) -> None:
     desc = msg.description[:60] if msg.description else ""
     tool = f" → {msg.last_tool_name}" if msg.last_tool_name else ""
     tokens = msg.usage.get("total_tokens", 0) if msg.usage else 0
@@ -368,7 +186,7 @@ def _show_task_progress(msg: TaskProgressMessage) -> None:
     ))
 
 
-def _show_task_notification(msg: TaskNotificationMessage) -> None:
+def _show_task_notification(msg: AgentTaskNotification) -> None:
     status_style = {
         "completed": "green",
         "failed": "red",
@@ -392,15 +210,15 @@ def _show_assistant_error(error: str) -> None:
     console.print(Text(f"  ⚠ {msg}", style="bold red"))
 
 
-def _show_result_details(msg: ResultMessage) -> None:
-    """Show end-of-turn details from ResultMessage."""
+def _show_result_details(msg: AgentResult) -> None:
+    """Show end-of-turn details."""
     parts = []
-    if msg.total_cost_usd:
-        parts.append(f"${msg.total_cost_usd:.4f}")
+    if msg.cost_usd:
+        parts.append(f"${msg.cost_usd:.4f}")
     if msg.num_turns:
         parts.append(f"{msg.num_turns} turns")
-    if msg.duration_api_ms:
-        secs = msg.duration_api_ms / 1000
+    if msg.duration_ms:
+        secs = msg.duration_ms / 1000
         parts.append(f"{secs:.1f}s API")
     if msg.usage:
         input_tokens = msg.usage.get("input_tokens", 0)
@@ -413,7 +231,6 @@ def _show_result_details(msg: ResultMessage) -> None:
         parts.append("⚠ error")
     if parts:
         console.print(Text(f"  [{' · '.join(parts)}]", style="dim"))
-
 
 
 def _print_help() -> None:
@@ -432,7 +249,6 @@ def _bottom_toolbar(registry: ProviderRegistry, cost: float, turns: int, sandbox
     provider = registry.active
     name = provider.display_name if provider else "none"
     cost_str = f"${cost:.4f}" if cost > 0 else "$0"
-    # Show abbreviated sandbox path
     short_path = sandbox_path.replace(str(Path.home()), "~") if sandbox_path else "on"
     return f"  ⏵⏵ sandbox: {short_path}  |  {name}  |  {cost_str} · {turns} turns  |  /help for commands"
 
@@ -458,41 +274,7 @@ def _build_session(
     )
 
 
-def _build_options(
-    registry: ProviderRegistry,
-    cwd: str,
-) -> ClaudeAgentOptions:
-    provider = registry.active
-    assert provider is not None
-
-    sandbox: SandboxSettings = {
-        "enabled": True,
-        # auto-approve Bash when OS sandbox is active. The OS sandbox
-        # (Seatbelt/bubblewrap) blocks writes outside project dir at the
-        # kernel level. can_use_tool adds defense-in-depth (blocks sudo,
-        # .., absolute paths). Setting this True prevents the CLI's own
-        # permission prompt from silently failing in programmatic mode.
-        "autoAllowBashIfSandboxed": True,
-        "allowUnsandboxedCommands": False,
-    }
-
-    opts = ClaudeAgentOptions(
-        # Do NOT put tools in allowed_tools — that pre-approves them and
-        # bypasses can_use_tool. Our callback handles all permission decisions.
-        allowed_tools=[],
-        cwd=cwd,
-        add_dirs=[cwd],
-        system_prompt=_INTERACTIVE_PROMPT,
-        env=provider.get_sdk_env(),
-        sandbox=sandbox,
-        can_use_tool=_make_sandbox_guard(cwd),
-        include_partial_messages=True,
-    )
-    model = provider.get_model()
-    if model:
-        opts.model = model
-    return opts
-
+# --- Main REPL ---
 
 async def run_interactive(
     registry: ProviderRegistry,
@@ -502,18 +284,10 @@ async def run_interactive(
 ) -> None:
     """Main interactive REPL loop with Claude Code-style UX."""
     cwd = str(Path(cwd).resolve())
-    # Ensure sandbox directory exists and has restrictive Claude settings
     Path(cwd).mkdir(parents=True, exist_ok=True)
-    _write_sandbox_settings(cwd)
     cost_ref = [0.0]
     turns_ref = [0]
-    # Track session ID so we can resume after Ctrl+C kills the CLI process.
-    # The CLI stores conversation transcripts on disk — resume reconnects to them.
-    session_id_ref: list[str | None] = [None]
-
-    options = _build_options(registry, cwd)
-    if model_override:
-        options.model = model_override
+    session_id: str | None = None
 
     session = _build_session(registry, cost_ref, turns_ref, cwd)
 
@@ -523,13 +297,16 @@ async def run_interactive(
     try:
         first_connect = True
         while True:
-            # If we have a previous session_id, resume it so the agent
-            # retains full conversation context after an interrupt.
-            if session_id_ref[0]:
-                options.resume = session_id_ref[0]
+            backend = create_interactive_backend(
+                provider=registry.active,
+                system_prompt=_INTERACTIVE_PROMPT,
+                cwd=cwd,
+                model=model_override or registry.active.get_model(),
+                resume=session_id,
+            )
 
             try:
-                async with ClaudeSDKClient(options=options) as client:
+                async with backend:
                     if first_connect:
                         _clear_screen()
                         display.show_banner_interactive(registry, cwd)
@@ -557,9 +334,8 @@ async def run_interactive(
                             continue
                         if cmd == "/config":
                             run_setup(registry)
-                            options = _build_options(registry, cwd)
-                            if model_override:
-                                options.model = model_override
+                            if model_override is None:
+                                pass  # new backend picks up new provider's model
                             console.print("Provider config updated. Reconnecting...\n")
                             break
                         if cmd == "/status":
@@ -569,26 +345,22 @@ async def run_interactive(
                             _show_cost(cost_ref[0], turns_ref[0])
                             continue
                         if cmd == "/clear":
-                            # Clear starts a fresh session — no resume
-                            session_id_ref[0] = None
-                            options.resume = None
+                            session_id = None
                             _clear_screen()
                             display.show_banner_interactive(registry, cwd)
-                            break  # recreate client without resume
+                            break
 
                         # Send to agent and auto-continue until interrupted
                         try:
-                            await client.query(user_input)
-                            stop = await _run_agent_turn(client, cost_ref, turns_ref, session_id_ref)
+                            await backend.send_message(user_input)
+                            stop = await _run_agent_turn(backend, cost_ref, turns_ref)
 
-                            # Auto-continue: if agent stopped normally, push it
-                            # to keep building. This enforces "never stop early."
                             while auto_continue and stop == "end_turn":
                                 console.print(Text(
                                     "  ↻ continuing...",
                                     style="dim cyan",
                                 ))
-                                await client.query(
+                                await backend.send_message(
                                     "Continue building. Do NOT stop. Do NOT re-explore the "
                                     "codebase from scratch — you already know the project "
                                     "structure from previous turns.\n\n"
@@ -605,57 +377,53 @@ async def run_interactive(
                                     "Remember: use RELATIVE paths only. Stay inside the "
                                     "sandbox. Do NOT use absolute paths or .. traversal."
                                 )
-                                stop = await _run_agent_turn(client, cost_ref, turns_ref, session_id_ref)
+                                stop = await _run_agent_turn(backend, cost_ref, turns_ref)
 
                         except (KeyboardInterrupt, asyncio.CancelledError):
                             console.print(Text("\n  ⏹ interrupted", style="bold yellow"))
                             _show_separator()
                             break
-                        except (ProcessError, CLINotFoundError) as e:
-                            if isinstance(e, CLINotFoundError):
-                                console.print(
-                                    "[bold red]Error:[/] Claude Code CLI not found. "
-                                    "Install: npm install -g @anthropic-ai/claude-code"
-                                )
-                                return
+                        except BackendNotFoundError:
+                            console.print(
+                                "[bold red]Error:[/] Claude Code CLI not found. "
+                                "Install: npm install -g @anthropic-ai/claude-code"
+                            )
+                            return
+                        except BackendProcessError as e:
                             if hasattr(e, "exit_code") and e.exit_code == -2:
                                 console.print(Text("\n  ⏹ interrupted", style="bold yellow"))
                                 _show_separator()
                                 break
                             console.print(f"\n[red]Error: {e}[/]\n")
                             break
-                        except Exception as e:
-                            err_str = str(e).lower()
-                            if "rate" in err_str and "limit" in err_str:
-                                new_provider = registry.handle_rate_limit()
-                                if new_provider and new_provider.status == ProviderStatus.CONNECTED:
-                                    console.print(
-                                        f"\n[yellow]Rate limited. Switching to "
-                                        f"{new_provider.display_name}...[/]"
-                                    )
-                                    options = _build_options(registry, cwd)
-                                    if model_override:
-                                        options.model = model_override
-                                    break
-                                else:
-                                    console.print(
-                                        "\n[bold red]Rate limited and no available providers. "
-                                        "Try again later.[/]"
-                                    )
-                                    return
+                        except BackendRateLimitError:
+                            new_provider = registry.handle_rate_limit()
+                            if new_provider and new_provider.status == ProviderStatus.CONNECTED:
+                                console.print(
+                                    f"\n[yellow]Rate limited. Switching to "
+                                    f"{new_provider.display_name}...[/]"
+                                )
+                                break
                             else:
-                                console.print(f"\n[red]Error: {e}[/]\n")
+                                console.print(
+                                    "\n[bold red]Rate limited and no available providers. "
+                                    "Try again later.[/]"
+                                )
+                                return
+                        except Exception as e:
+                            console.print(f"\n[red]Error: {e}[/]\n")
 
-            except CLINotFoundError:
+                # Save session_id for potential reconnect
+                session_id = backend.session_id
+
+            except BackendNotFoundError:
                 console.print(
                     "[bold red]Error:[/] Claude Code CLI not found. "
                     "Install: npm install -g @anthropic-ai/claude-code"
                 )
                 return
             except (KeyboardInterrupt, asyncio.CancelledError):
-                # Ctrl+C during client reconnection. If we have a session to
-                # resume, try once more. Otherwise exit.
-                if session_id_ref[0]:
+                if session_id:
                     continue
                 break
 
@@ -666,40 +434,31 @@ async def run_interactive(
 
 
 async def _run_agent_turn(
-    client: ClaudeSDKClient,
+    backend: InteractiveBackend,
     cost_ref: list[float],
     turns_ref: list[int],
-    session_id_ref: list[str | None],
 ) -> str | None:
     """Run a single agent turn with live streaming output.
 
-    Returns the stop_reason from ResultMessage (e.g., "end_turn", "max_tokens").
-
-    StreamEvent flow (from official docs):
-      content_block_start  → new block (text, tool_use, thinking)
-      content_block_delta  → incremental content (text_delta, thinking_delta, input_json_delta)
-      content_block_stop   → block finished
-    Then a full AssistantMessage arrives with all blocks — we skip duplicates.
+    Returns the stop_reason (e.g., "end_turn", "max_tokens").
     """
     shown_thinking = False
-    streaming_text = False  # currently streaming text to stdout
-    streamed_text = False   # did we stream text for the current AssistantMessage?
-    in_tool = False         # currently inside a tool_use block
+    streaming_text = False
+    streamed_text = False
+    in_tool = False
     stop_reason: str | None = None
     spinner = _ThinkingSpinner()
-    spinner.start()  # show immediately — model is thinking after receiving query
-    saw_tool_result = False  # track when to restart spinner after tool completes
+    spinner.start()
+    saw_tool_result = False
 
-    async for message in client.receive_response():
+    async for message in backend.receive():
         # --- Live streaming events ---
-        if isinstance(message, StreamEvent):
-            event = message.event
-            event_type = event.get("type", "")
+        if isinstance(message, AgentStreamEvent):
+            event_type = message.event_type
 
             if event_type == "content_block_start":
                 spinner.stop()
-                content_block = event.get("content_block", {})
-                block_type = content_block.get("type", "")
+                block_type = message.block_type
 
                 if block_type == "tool_use":
                     if streaming_text:
@@ -721,12 +480,11 @@ async def _run_agent_turn(
                         spinner.start()
 
             elif event_type == "content_block_delta":
-                delta = event.get("delta", {})
-                delta_type = delta.get("type", "")
+                delta_type = message.delta_type
 
                 if delta_type == "text_delta" and not in_tool:
                     spinner.stop()
-                    text = delta.get("text", "")
+                    text = message.text
                     if text:
                         if not streaming_text:
                             console.print()
@@ -736,7 +494,6 @@ async def _run_agent_turn(
                         sys.stdout.write(text)
                         sys.stdout.flush()
                 elif delta_type == "thinking_delta":
-                    # Thinking is happening — spinner shows this
                     if not shown_thinking and not spinner._visible:
                         spinner.start()
 
@@ -755,60 +512,50 @@ async def _run_agent_turn(
             sys.stdout.flush()
             streaming_text = False
 
-        # --- Full message blocks (after streaming completes) ---
-        if isinstance(message, AssistantMessage):
+        # --- Full message blocks ---
+        if isinstance(message, AgentMessage):
             spinner.stop()
             if message.error:
                 _show_assistant_error(message.error)
 
             saw_tool_result = False
             for block in message.content:
-                if isinstance(block, ThinkingBlock) and block.thinking.strip():
+                if isinstance(block, AgentThinkingBlock) and block.thinking.strip():
                     if not shown_thinking:
                         _show_thinking(block.thinking)
                         shown_thinking = True
-                elif isinstance(block, TextBlock) and block.text.strip():
+                elif isinstance(block, AgentTextBlock) and block.text.strip():
                     if streamed_text:
                         continue
                     _show_response(block.text)
-                elif isinstance(block, ToolUseBlock):
+                elif isinstance(block, AgentToolUseBlock):
                     _show_tool_use(
                         block.name,
                         block.input if isinstance(block.input, dict) else {},
                     )
-                elif isinstance(block, ToolResultBlock):
+                elif isinstance(block, AgentToolResultBlock):
                     _show_tool_result(block)
                     saw_tool_result = True
 
-            # After processing tool results, the model will think again —
-            # show spinner while waiting for next response
             if saw_tool_result:
                 spinner.start()
-                shown_thinking = False  # allow thinking preview for next round
+                shown_thinking = False
 
-            # NOTE: do NOT reset streamed_text here. With include_partial_messages,
-            # multiple AssistantMessages arrive per turn (partial + final). Resetting
-            # would cause the final message's TextBlock to double-display.
-
-        # --- Task lifecycle (sub-agents) ---
-        elif isinstance(message, TaskStartedMessage):
+        # --- Task lifecycle (sub-agents, Claude-specific) ---
+        elif isinstance(message, AgentTaskStarted):
             spinner.stop()
             _show_task_started(message)
-        elif isinstance(message, TaskProgressMessage):
+        elif isinstance(message, AgentTaskProgress):
             _show_task_progress(message)
-        elif isinstance(message, TaskNotificationMessage):
+        elif isinstance(message, AgentTaskNotification):
             spinner.stop()
             _show_task_notification(message)
-        elif isinstance(message, SystemMessage):
-            pass
 
         # --- Result (end of turn) ---
-        elif isinstance(message, ResultMessage):
+        elif isinstance(message, AgentResult):
             spinner.stop()
-            if message.session_id:
-                session_id_ref[0] = message.session_id
-            if message.total_cost_usd:
-                cost_ref[0] += message.total_cost_usd
+            if message.cost_usd:
+                cost_ref[0] += message.cost_usd
             if message.num_turns:
                 turns_ref[0] += message.num_turns
             stop_reason = message.stop_reason
