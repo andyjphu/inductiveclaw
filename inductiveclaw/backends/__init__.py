@@ -84,6 +84,17 @@ def create_autonomous_backend(
             mcp_servers=mcp_servers or {},
         )
 
+    if backend_type == "openai":
+        from .openai import OpenAIAutonomousBackend
+
+        return OpenAIAutonomousBackend(
+            system_prompt=system_prompt,
+            project_dir=resolved_cwd,
+            env=provider.get_sdk_env(),
+            model=model or provider.get_model() or "o3",
+            max_turns=max_turns,
+        )
+
     raise NotImplementedError(
         f"Backend '{backend_type}' is not yet implemented. "
         f"Install the provider's optional dependencies and try again."
@@ -111,6 +122,16 @@ def create_interactive_backend(
             env=provider.get_sdk_env(),
             model=model,
             resume=resume,
+        )
+
+    if backend_type == "openai":
+        from .openai import OpenAIInteractiveBackend
+
+        return OpenAIInteractiveBackend(
+            system_prompt=system_prompt,
+            project_dir=resolved_cwd,
+            env=provider.get_sdk_env(),
+            model=model or provider.get_model() or "o3",
         )
 
     raise NotImplementedError(
