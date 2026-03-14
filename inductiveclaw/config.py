@@ -20,6 +20,8 @@ class ClawConfig:
     verbose: bool = True
     eval_frequency: int = 3
     budget_usd: float | None = None
+    num_branches: int = 1
+    round_length: int | None = None  # defaults to eval_frequency at runtime
 
 
 @dataclass
