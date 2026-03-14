@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .budget import BudgetTracker
     from .config import ClawConfig, IdeaRecord, UsageTracker
     from .providers import ProviderRegistry
 
@@ -44,6 +45,8 @@ def show_banner(config: ClawConfig, registry: ProviderRegistry) -> None:
         table.add_row("[bold]Model[/]", config.model or "default")
         table.add_row("[bold]Threshold[/]", f"{config.quality_threshold}/10")
         table.add_row("[bold]Max iterations[/]", str(config.max_iterations))
+        if config.budget_usd is not None:
+            table.add_row("[bold]Budget[/]", f"${config.budget_usd:.2f}")
         if registry.cycle_enabled:
             table.add_row("[bold]Cycling[/]", "enabled")
         console.print(Panel(table, title="[bold]Configuration[/]", border_style="cyan"))
@@ -96,7 +99,8 @@ def show_iteration_header(n: int, tracker: UsageTracker) -> None:
     features = len(tracker.features_completed)
     score = tracker.last_quality_score
     score_str = f" | Score: {score}/10" if score is not None else ""
-    label = f"Iteration {n} | Features: {features}{score_str} | {tracker.duration_display}"
+    cost_str = f" | Cost: ${tracker.total_cost_usd:.4f}" if tracker.total_cost_usd > 0 else ""
+    label = f"Iteration {n} | Features: {features}{score_str}{cost_str} | {tracker.duration_display}"
 
     if _has_rich:
         console.rule(f"[bold yellow]{label}[/]")
@@ -189,6 +193,8 @@ def show_summary(tracker: UsageTracker) -> None:
         table.add_row("[bold]Features[/]", str(len(tracker.features_completed)))
         table.add_row("[bold]Final score[/]", f"{tracker.last_quality_score}/10" if tracker.last_quality_score else "N/A")
         table.add_row("[bold]Duration[/]", tracker.duration_display)
+        if tracker.total_cost_usd > 0:
+            table.add_row("[bold]Total cost[/]", f"${tracker.total_cost_usd:.4f}")
         if tracker.quality_history:
             table.add_row("[bold]Score history[/]", " -> ".join(str(s) for s in tracker.quality_history))
         if tracker.errors:
@@ -207,5 +213,35 @@ def show_summary(tracker: UsageTracker) -> None:
         print(f"Features: {len(tracker.features_completed)}")
         print(f"Final score: {tracker.last_quality_score}/10" if tracker.last_quality_score else "Final score: N/A")
         print(f"Duration: {tracker.duration_display}")
+        if tracker.total_cost_usd > 0:
+            print(f"Total cost: ${tracker.total_cost_usd:.4f}")
         if tracker.quality_history:
             print(f"Score history: {' -> '.join(str(s) for s in tracker.quality_history)}")
+
+
+def show_budget_warning(budget: BudgetTracker) -> None:
+    """Display a warning when budget reaches 80%."""
+    remaining = budget.remaining_usd or 0.0
+    if _has_rich:
+        console.print(
+            f"\n  [bold yellow]Budget warning:[/] "
+            f"[yellow]{budget.format_status()} spent "
+            f"(${remaining:.4f} remaining)[/]\n"
+        )
+    else:
+        print(f"\n  Budget warning: {budget.format_status()} "
+              f"(${remaining:.4f} remaining)\n")
+
+
+def show_budget_exceeded(budget: BudgetTracker) -> None:
+    """Display a message when budget is fully spent."""
+    if _has_rich:
+        console.print(Panel(
+            f"[bold red]Budget exceeded:[/] {budget.format_status()}\n"
+            f"Gracefully stopping.",
+            border_style="red",
+            title="[bold red]Budget Limit Reached[/]",
+        ))
+    else:
+        print(f"\n  BUDGET EXCEEDED: {budget.format_status()}")
+        print("  Gracefully stopping.\n")

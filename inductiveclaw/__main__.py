@@ -29,6 +29,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ctrl.add_argument("-t", "--threshold", type=int, default=8, help="Quality threshold 1-10 (default: 8)")
     ctrl.add_argument("--max-iterations", type=int, default=100, help="Max outer loop iterations (default: 100)")
     ctrl.add_argument("--eval-frequency", type=int, default=3, help="Evaluate every N iterations (default: 3)")
+    ctrl.add_argument("--budget", type=float, default=None, metavar="USD",
+                       help="Maximum USD to spend this session (e.g., --budget 5.00)")
 
     vis = parser.add_argument_group("visual")
     vis.add_argument("--no-screenshot", action="store_true", help="Disable screenshot evaluation")
@@ -143,6 +145,7 @@ def main(argv: list[str] | None = None) -> None:
             screenshot_port=args.port,
             dev_server_cmd=args.dev_cmd,
             verbose=not args.quiet and args.verbose,
+            budget_usd=args.budget,
         )
         anyio.run(run, config, registry)
     else:
@@ -159,7 +162,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             anyio.run(
                 run_interactive, registry, cwd, args.model,
-                not args.no_auto, args.resume,
+                not args.no_auto, args.resume, args.budget,
             )
         except KeyboardInterrupt:
             pass

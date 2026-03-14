@@ -19,6 +19,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style as PTStyle
 
 from . import display
+from .budget import BudgetStatus, BudgetTracker
 from .backends import (
     AgentMessage,
     AgentResult,
@@ -249,10 +250,16 @@ def _print_help() -> None:
 
 # --- Input with prompt_toolkit ---
 
-def _bottom_toolbar(registry: ProviderRegistry, cost: float, turns: int, sandbox_path: str = "") -> str:
+def _bottom_toolbar(
+    registry: ProviderRegistry, cost: float, turns: int,
+    sandbox_path: str = "", budget: BudgetTracker | None = None,
+) -> str:
     provider = registry.active
     name = provider.display_name if provider else "none"
-    cost_str = f"${cost:.4f}" if cost > 0 else "$0"
+    if budget and budget.budget_usd is not None:
+        cost_str = budget.format_status()
+    else:
+        cost_str = f"${cost:.4f}" if cost > 0 else "$0"
     short_path = sandbox_path.replace(str(Path.home()), "~") if sandbox_path else "on"
     return f"  ⏵⏵ sandbox: {short_path}  |  {name}  |  {cost_str} · {turns} turns  |  /help for commands"
 
@@ -267,13 +274,14 @@ def _build_session(
     cost_ref: list[float],
     turns_ref: list[int],
     sandbox_path: str = "",
+    budget: BudgetTracker | None = None,
 ) -> PromptSession:
     completer = WordCompleter(list(SLASH_COMMANDS.keys()), sentence=True)
     return PromptSession(
         history=InMemoryHistory(),
         completer=completer,
         complete_while_typing=False,
-        bottom_toolbar=lambda: _bottom_toolbar(registry, cost_ref[0], turns_ref[0], sandbox_path),
+        bottom_toolbar=lambda: _bottom_toolbar(registry, cost_ref[0], turns_ref[0], sandbox_path, budget),
         style=_PT_STYLE,
     )
 
@@ -286,6 +294,7 @@ async def run_interactive(
     model_override: str | None = None,
     auto_continue: bool = True,
     resume_session_id: str | None = None,
+    budget_usd: float | None = None,
 ) -> None:
     """Main interactive REPL loop with Claude Code-style UX."""
     cwd = str(Path(cwd).resolve())
@@ -312,7 +321,9 @@ async def run_interactive(
     # Clean up old sessions on startup
     store.cleanup()
 
-    session = _build_session(registry, cost_ref, turns_ref, cwd)
+    budget = BudgetTracker(budget_usd=budget_usd, total_spent_usd=cost_ref[0])
+
+    session = _build_session(registry, cost_ref, turns_ref, cwd, budget)
 
     _clear_screen()
     console.print(Text("  Starting iclaw...\n", style="dim"))
@@ -376,7 +387,7 @@ async def run_interactive(
                             _show_status(registry)
                             continue
                         if cmd == "/cost":
-                            _show_cost(cost_ref[0], turns_ref[0])
+                            _show_cost(cost_ref[0], turns_ref[0], budget)
                             continue
                         if cmd == "/sessions clean":
                             removed = store.cleanup(retention_days=7)
@@ -424,12 +435,17 @@ async def run_interactive(
                         # Send to agent and auto-continue until interrupted
                         try:
                             await backend.send_message(user_input)
-                            stop = await _run_agent_turn(backend, cost_ref, turns_ref)
+                            stop = await _run_agent_turn(backend, cost_ref, turns_ref, budget)
                             active_record = _auto_save(
                                 store, backend, active_record, registry,
                                 model_override, cwd, cost_ref, turns_ref,
                                 user_input,
                             )
+
+                            # Budget exceeded — stop the session
+                            if budget.check() == BudgetStatus.EXCEEDED:
+                                display.show_interactive_summary(cost_ref[0], turns_ref[0])
+                                return
 
                             while auto_continue and stop == "end_turn":
                                 console.print(Text(
@@ -453,11 +469,15 @@ async def run_interactive(
                                     "Remember: use RELATIVE paths only. Stay inside the "
                                     "sandbox. Do NOT use absolute paths or .. traversal."
                                 )
-                                stop = await _run_agent_turn(backend, cost_ref, turns_ref)
+                                stop = await _run_agent_turn(backend, cost_ref, turns_ref, budget)
                                 active_record = _auto_save(
                                     store, backend, active_record, registry,
                                     model_override, cwd, cost_ref, turns_ref,
                                 )
+
+                                if budget.check() == BudgetStatus.EXCEEDED:
+                                    display.show_interactive_summary(cost_ref[0], turns_ref[0])
+                                    return
 
                         except (KeyboardInterrupt, asyncio.CancelledError):
                             # Save on interrupt before breaking
@@ -521,6 +541,7 @@ async def _run_agent_turn(
     backend: InteractiveBackend,
     cost_ref: list[float],
     turns_ref: list[int],
+    budget: BudgetTracker | None = None,
 ) -> str | None:
     """Run a single agent turn with live streaming output.
 
@@ -642,6 +663,16 @@ async def _run_agent_turn(
                 cost_ref[0] += message.cost_usd
             if message.num_turns:
                 turns_ref[0] += message.num_turns
+
+            if budget is not None:
+                budget.total_spent_usd = cost_ref[0]
+                status = budget.check()
+                if status == BudgetStatus.WARNING and not budget.warning_already_shown:
+                    budget.mark_warning_shown()
+                    display.show_budget_warning(budget)
+                elif status == BudgetStatus.EXCEEDED:
+                    display.show_budget_exceeded(budget)
+
             stop_reason = message.stop_reason
             _show_result_details(message)
 
@@ -650,8 +681,11 @@ async def _run_agent_turn(
     return stop_reason
 
 
-def _show_cost(total_cost: float, total_turns: int) -> None:
-    console.print(f"  [dim]Session cost: ${total_cost:.4f} | Turns: {total_turns}[/]")
+def _show_cost(total_cost: float, total_turns: int, budget: BudgetTracker | None = None) -> None:
+    if budget and budget.budget_usd is not None:
+        console.print(f"  [dim]Session cost: {budget.format_status()} | Turns: {total_turns}[/]")
+    else:
+        console.print(f"  [dim]Session cost: ${total_cost:.4f} | Turns: {total_turns}[/]")
 
 
 def _show_sessions(store: SessionStore) -> None:

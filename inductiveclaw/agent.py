@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import display
+from .budget import BudgetStatus, BudgetTracker
 from .backends import (
     AgentMessage,
     AgentResult,
@@ -109,6 +110,7 @@ async def _run_single_iteration(
     tools_server: object,
     project_dir: str,
     verbose: bool,
+    budget: BudgetTracker | None = None,
 ) -> IterationResult:
     """Run one iteration via the provider's backend."""
     backend = create_autonomous_backend(
@@ -131,6 +133,19 @@ async def _run_single_iteration(
                     display.show_tool_call(block.name, str(block.input)[:100])
 
         elif isinstance(message, AgentResult):
+            if message.cost_usd:
+                tracker.total_cost_usd += message.cost_usd
+            if message.num_turns:
+                tracker.total_turns += message.num_turns
+
+            if budget is not None:
+                status = budget.add_cost(message.cost_usd)
+                if status == BudgetStatus.WARNING and not budget.warning_already_shown:
+                    budget.mark_warning_shown()
+                    display.show_budget_warning(budget)
+                elif status == BudgetStatus.EXCEEDED:
+                    display.show_budget_exceeded(budget)
+
             if message.result:
                 display.show_result(message.result)
 
@@ -272,6 +287,7 @@ def _build_idea_history_text(tracker: UsageTracker) -> str:
 async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
     """Main autonomous loop with idea-phase transitions."""
     tracker = UsageTracker()
+    budget = BudgetTracker(budget_usd=config.budget_usd)
 
     tracker.current_idea = IdeaRecord(
         title=config.goal[:40],
@@ -312,7 +328,7 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
             try:
                 result = await _run_single_iteration(
                     prompt, config, tracker, registry, tools_server,
-                    current_project_dir, config.verbose,
+                    current_project_dir, config.verbose, budget,
                 )
                 consecutive_errors = 0
             except KeyboardInterrupt:
@@ -347,6 +363,10 @@ async def run(config: ClawConfig, registry: ProviderRegistry) -> None:
                 continue
 
             tracker.iterations_completed = iteration
+
+            # --- Budget check ---
+            if budget.check() == BudgetStatus.EXCEEDED:
+                break
 
             # --- Idea transition check ---
             if result.idea_proposed:
