@@ -219,6 +219,17 @@ def show_summary(tracker: UsageTracker) -> None:
             print(f"Score history: {' -> '.join(str(s) for s in tracker.quality_history)}")
 
 
+# Tournament display lives in display_parallel.py to stay under 300 lines.
+# Re-export so `display.*` calls from parallel.py and agent_worker.py work.
+from .display_parallel import (  # noqa: F401
+    show_branch_event,
+    show_parallel_banner,
+    show_round_header,
+    show_round_results,
+    show_tournament_summary,
+)
+
+
 def show_budget_warning(budget: BudgetTracker) -> None:
     """Display a warning when budget reaches 80%."""
     remaining = budget.remaining_usd or 0.0

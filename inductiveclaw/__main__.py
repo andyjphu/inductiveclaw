@@ -31,6 +31,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ctrl.add_argument("--eval-frequency", type=int, default=3, help="Evaluate every N iterations (default: 3)")
     ctrl.add_argument("--budget", type=float, default=None, metavar="USD",
                        help="Maximum USD to spend this session (e.g., --budget 5.00)")
+    ctrl.add_argument("--branches", type=int, default=1, metavar="N",
+                       help="Run N parallel branches per tournament round (default: 1)")
+    ctrl.add_argument("--round-length", type=int, default=None, metavar="K",
+                       help="Iterations per tournament round (default: eval-frequency)")
 
     vis = parser.add_argument_group("visual")
     vis.add_argument("--no-screenshot", action="store_true", help="Disable screenshot evaluation")
@@ -146,8 +150,14 @@ def main(argv: list[str] | None = None) -> None:
             dev_server_cmd=args.dev_cmd,
             verbose=not args.quiet and args.verbose,
             budget_usd=args.budget,
+            num_branches=args.branches,
+            round_length=args.round_length,
         )
-        anyio.run(run, config, registry)
+        if config.num_branches > 1:
+            from .parallel import run_parallel
+            anyio.run(run_parallel, config, registry)
+        else:
+            anyio.run(run, config, registry)
     else:
         # Interactive mode
         from pathlib import Path

@@ -15,8 +15,14 @@ _SCREENSHOT = files(__package__).joinpath("screenshot_trigger.md").read_text().s
 _IDEA_PROPOSAL = files(__package__).joinpath("idea_proposal.md").read_text().strip()
 
 
+_APPROACH_HINT = files(__package__).joinpath("approach_hint.md").read_text().strip()
+
+
 def build_iteration_prompt(
-    config: ClawConfig, iteration: int, tracker: UsageTracker
+    config: ClawConfig,
+    iteration: int,
+    tracker: UsageTracker,
+    approach_hint: str | None = None,
 ) -> str:
     """Build the user-message prompt for a single iteration."""
 
@@ -26,9 +32,14 @@ def build_iteration_prompt(
         and tracker.iterations_completed == 0
         and tracker.idea_number > 1
     ):
-        return _build_new_idea_prompt(config, tracker)
+        prompt = _build_new_idea_prompt(config, tracker)
+    else:
+        prompt = _subsequent(config, iteration, tracker)
 
-    return _subsequent(config, iteration, tracker)
+    if approach_hint:
+        prompt = _APPROACH_HINT.format(approach_hint=approach_hint) + "\n\n" + prompt
+
+    return prompt
 
 
 def _build_new_idea_prompt(config: ClawConfig, tracker: UsageTracker) -> str:
