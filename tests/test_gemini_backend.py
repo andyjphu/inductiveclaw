@@ -25,7 +25,7 @@ class TestBuildGeminiTools:
     def test_returns_list(self):
         tools = _build_gemini_tools()
         assert isinstance(tools, list)
-        assert len(tools) == 11
+        assert len(tools) == 12  # 7 iclaw + 5 builtins
 
     def test_declaration_format(self):
         tools = _build_gemini_tools()

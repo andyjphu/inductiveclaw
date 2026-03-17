@@ -17,6 +17,7 @@ from .tools_core import (
     tool_write_docs,
     tool_smoke_test,
     tool_propose_idea,
+    tool_browser_evaluate,
 )
 
 if TYPE_CHECKING:
@@ -124,6 +125,23 @@ def create_iclaw_tools(config: ClawConfig):
         return await tool_smoke_test(project_dir, args, default_port=port)
 
     @tool(
+        "browser_evaluate",
+        "Launch the built project in a headless browser and systematically evaluate "
+        "it. Discovers routes, clicks every button, fills forms, presses keyboard "
+        "shortcuts, monitors console errors, detects keybinding conflicts, and "
+        "reports network failures. Returns an objective health report. Call this "
+        "BEFORE self_evaluate on eval iterations.",
+        {
+            "url": str,
+            "interaction_depth": int,
+            "check_keybindings": bool,
+            "check_responsive": bool,
+        },
+    )
+    async def browser_evaluate(args: dict[str, Any]) -> dict[str, Any]:
+        return await tool_browser_evaluate(project_dir, args, default_port=port)
+
+    @tool(
         "propose_idea",
         "Propose a new idea phase. Call this when the current idea is complete "
         "(score >= threshold, ready_to_ship). The new idea gets its own git worktree. "
@@ -148,6 +166,7 @@ def create_iclaw_tools(config: ClawConfig):
             take_screenshot,
             write_docs,
             smoke_test,
+            browser_evaluate,
             propose_idea,
         ],
     )
