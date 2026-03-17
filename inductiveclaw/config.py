@@ -23,6 +23,8 @@ class ClawConfig:
     browser_eval: bool = True
     num_branches: int = 1
     round_length: int | None = None  # defaults to eval_frequency at runtime
+    dashboard: bool = False
+    dashboard_port: int = 8420
 
 
 @dataclass
