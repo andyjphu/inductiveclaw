@@ -41,6 +41,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     vis.add_argument("--no-browser-eval", action="store_true", help="Disable browser-based product evaluation")
     vis.add_argument("--port", type=int, default=3000, help="Dev server port (default: 3000)")
     vis.add_argument("--dev-cmd", default=None, help="Dev server command (auto-detected if omitted)")
+    vis.add_argument("--dash", "--dashboard", action="store_true", dest="dashboard",
+                     help="Launch live dashboard web UI")
+    vis.add_argument("--dash-port", type=int, default=8420, help="Dashboard port (default: 8420)")
 
     inter = parser.add_argument_group("interactive mode")
     inter.add_argument("--no-auto", action="store_true", help="Disable auto-continue (agent stops after each turn)")
@@ -95,6 +98,31 @@ def _warn_no_sandbox(cwd: str) -> None:
         f"\033[0m",
         file=sys.stderr,
     )
+
+
+def _create_dashboard(config: ClawConfig) -> object:
+    """Create a DashboardServer instance (lazy import, helpful error if missing)."""
+    try:
+        from .dashboard import DashboardServer, DashboardState, EventBridge, SteeringChannel
+    except ImportError:
+        print(
+            "Dashboard requires the websockets package.\n"
+            "Install it with: pip install iclaw[dashboard]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    state = DashboardState.from_config(config)
+    steering = SteeringChannel()
+    bridge = EventBridge(state, broadcast=lambda msg: None)  # broadcast wired in start()
+    server = DashboardServer(state, bridge, steering, port=config.dashboard_port)
+
+    import webbrowser
+    url = f"http://localhost:{config.dashboard_port}"
+    print(f"\n  Dashboard: {url}\n", file=sys.stderr)
+    webbrowser.open(url)
+
+    return server
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -154,12 +182,19 @@ def main(argv: list[str] | None = None) -> None:
             budget_usd=args.budget,
             num_branches=args.branches,
             round_length=args.round_length,
+            dashboard=args.dashboard,
+            dashboard_port=args.dash_port,
         )
+
+        dashboard = None
+        if config.dashboard:
+            dashboard = _create_dashboard(config)
+
         if config.num_branches > 1:
             from .parallel import run_parallel
-            anyio.run(run_parallel, config, registry)
+            anyio.run(run_parallel, config, registry, dashboard)
         else:
-            anyio.run(run, config, registry)
+            anyio.run(run, config, registry, dashboard)
     else:
         # Interactive mode
         from pathlib import Path

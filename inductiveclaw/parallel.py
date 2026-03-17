@@ -12,6 +12,7 @@ import signal
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import anyio
 
@@ -20,6 +21,9 @@ from .agent_worker import BranchEvent, BranchResult, run_branch
 from .budget import BudgetStatus, BudgetTracker
 from .config import ClawConfig
 from .providers import ProviderRegistry
+
+if TYPE_CHECKING:
+    from .dashboard import DashboardServer
 
 APPROACH_HINTS = [
     "Focus on minimalism: fewest dependencies, simplest architecture, most readable code.",
@@ -89,7 +93,11 @@ def _make_branch_config(config: ClawConfig, branch_dir: str) -> ClawConfig:
 # Tournament coordinator
 # ---------------------------------------------------------------------------
 
-async def run_parallel(config: ClawConfig, registry: ProviderRegistry) -> None:
+async def run_parallel(
+    config: ClawConfig,
+    registry: ProviderRegistry,
+    dashboard: DashboardServer | None = None,
+) -> None:
     """Run a tournament-style parallel exploration loop."""
     num_branches = config.num_branches
     round_length = config.round_length or config.eval_frequency
@@ -97,6 +105,9 @@ async def run_parallel(config: ClawConfig, registry: ProviderRegistry) -> None:
 
     display.show_parallel_banner(config, registry, num_branches)
     Path(config.project_dir).mkdir(parents=True, exist_ok=True)
+
+    if dashboard is not None:
+        await dashboard.start()
 
     current_base_dir = config.project_dir
     total_iterations = 0
@@ -143,6 +154,8 @@ async def run_parallel(config: ClawConfig, registry: ProviderRegistry) -> None:
 
                 def on_event(event: BranchEvent) -> None:
                     display.show_branch_event(event.branch_id, event.event_type, event.data)
+                    if dashboard is not None:
+                        dashboard.bridge.handle_event(event)
 
                 try:
                     result = await run_branch(
@@ -184,6 +197,15 @@ async def run_parallel(config: ClawConfig, registry: ProviderRegistry) -> None:
             ))
             display.show_round_results(round_num, results, winner)
 
+            # Emit round_complete to dashboard
+            if dashboard is not None:
+                dashboard.bridge.emit_round_complete(
+                    round_num, winner.branch_id,
+                    [{"branch_id": r.branch_id, "final_score": r.final_score,
+                      "iterations": r.iterations_completed, "cost_usd": r.cost_usd,
+                      "stop_reason": r.stop_reason} for r in results],
+                )
+
             # Accumulate total iterations
             for r in results:
                 total_iterations += r.iterations_completed
@@ -204,6 +226,8 @@ async def run_parallel(config: ClawConfig, registry: ProviderRegistry) -> None:
     finally:
         signal.signal(signal.SIGINT, prev_handler)
         signal.signal(signal.SIGTERM, prev_term)
+        if dashboard is not None:
+            await dashboard.stop()
 
     # Finalize: copy winner to original project dir
     if round_summaries:

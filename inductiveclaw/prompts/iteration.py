@@ -111,6 +111,15 @@ def _subsequent(
     if config.auto_screenshot and iteration % config.eval_frequency == 0:
         context_parts.append(_SCREENSHOT)
 
+    # Dashboard steering hint (injected via --dash UI)
+    steering_hint = getattr(config, "_steering_hint", None)
+    if steering_hint:
+        context_parts.append(
+            f"**PRIORITY FROM OPERATOR:** {steering_hint}\n"
+            f"Address this directive in the current iteration."
+        )
+        config._steering_hint = None  # type: ignore[attr-defined]
+
     # Idea proposal trigger — when quality threshold met
     pending = getattr(tracker, "_pending_idea_prompt", False)
     if pending:

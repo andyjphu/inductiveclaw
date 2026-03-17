@@ -1,8 +1,4 @@
-"""Single-branch iteration loop — the core reusable unit.
-
-Extracted from agent.py. Uses git_helpers for worktree/idea management.
-"""
-
+"""Single-branch iteration loop — reusable unit for single and tournament modes."""
 from __future__ import annotations
 
 import signal
@@ -106,6 +102,9 @@ async def _run_single_iteration(
                 if isinstance(block, AgentTextBlock) and block.text.strip():
                     if verbose:
                         display.show_agent_text(block.text)
+                    if branch_id and on_event:
+                        preview = block.text.strip()[:200]
+                        on_event(BranchEvent(branch_id, "text_preview", {"text": preview}))
                 elif isinstance(block, AgentToolUseBlock):
                     if branch_id and on_event:
                         on_event(BranchEvent(branch_id, "tool_call", {"name": block.name}))
@@ -146,6 +145,7 @@ async def run_branch(
     max_iterations: int | None = None,
     stop_event: anyio.abc.Event | None = None,
     on_event: Callable[[BranchEvent], None] | None = None,
+    steering: object | None = None,
 ) -> BranchResult:
     """Run the full iteration loop for a single branch."""
     tracker = UsageTracker()
@@ -186,6 +186,14 @@ async def run_branch(
             if stop_event is not None and stop_event.is_set():
                 stop_reason = "interrupted"
                 break
+
+            # Process dashboard steering commands
+            if steering is not None:
+                from .dashboard.steering import process_pending_commands
+                action = await process_pending_commands(steering, config)
+                if action == "stop":
+                    stop_reason = "interrupted"
+                    break
 
             tracker.iterations_completed = iteration
 
