@@ -15,6 +15,7 @@ _SCREENSHOT = files(__package__).joinpath("screenshot_trigger.md").read_text().s
 _IDEA_PROPOSAL = files(__package__).joinpath("idea_proposal.md").read_text().strip()
 
 
+_BROWSER_EVAL = files(__package__).joinpath("browser_eval_trigger.md").read_text().strip()
 _APPROACH_HINT = files(__package__).joinpath("approach_hint.md").read_text().strip()
 
 
@@ -103,6 +104,9 @@ def _subsequent(
     # Eval and screenshot triggers
     if iteration % config.eval_frequency == 0:
         context_parts.append(_EVAL)
+
+    if config.browser_eval and iteration % config.eval_frequency == 0:
+        context_parts.append(_BROWSER_EVAL)
 
     if config.auto_screenshot and iteration % config.eval_frequency == 0:
         context_parts.append(_SCREENSHOT)

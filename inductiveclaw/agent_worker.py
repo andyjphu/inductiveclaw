@@ -47,6 +47,7 @@ AUTONOMOUS_TOOLS = [
     "mcp__iclaw-tools__take_screenshot",
     "mcp__iclaw-tools__write_docs",
     "mcp__iclaw-tools__smoke_test",
+    "mcp__iclaw-tools__browser_evaluate",
     "mcp__iclaw-tools__propose_idea",
 ]
 

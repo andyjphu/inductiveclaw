@@ -18,9 +18,10 @@ from inductiveclaw.tools_core import (
 
 
 class TestToolSchemas:
-    def test_all_six_tools_present(self):
+    def test_all_tools_present(self):
         expected = {"update_backlog", "self_evaluate", "take_screenshot",
-                    "write_docs", "smoke_test", "propose_idea"}
+                    "write_docs", "smoke_test", "propose_idea",
+                    "browser_evaluate"}
         assert set(TOOL_SCHEMAS.keys()) == expected
 
     def test_schemas_have_required_fields(self):

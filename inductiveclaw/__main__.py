@@ -38,6 +38,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     vis = parser.add_argument_group("visual")
     vis.add_argument("--no-screenshot", action="store_true", help="Disable screenshot evaluation")
+    vis.add_argument("--no-browser-eval", action="store_true", help="Disable browser-based product evaluation")
     vis.add_argument("--port", type=int, default=3000, help="Dev server port (default: 3000)")
     vis.add_argument("--dev-cmd", default=None, help="Dev server command (auto-detected if omitted)")
 
@@ -146,6 +147,7 @@ def main(argv: list[str] | None = None) -> None:
             max_iterations=args.max_iterations,
             eval_frequency=args.eval_frequency,
             auto_screenshot=not args.no_screenshot,
+            browser_eval=not args.no_browser_eval,
             screenshot_port=args.port,
             dev_server_cmd=args.dev_cmd,
             verbose=not args.quiet and args.verbose,

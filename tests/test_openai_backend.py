@@ -25,7 +25,7 @@ class TestBuildOpenAITools:
     def test_returns_list(self):
         tools = _build_openai_tools()
         assert isinstance(tools, list)
-        assert len(tools) == 11  # 6 iclaw + 5 builtins
+        assert len(tools) == 12  # 7 iclaw + 5 builtins
 
     def test_tool_format(self):
         tools = _build_openai_tools()

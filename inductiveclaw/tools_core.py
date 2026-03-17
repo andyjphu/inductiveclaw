@@ -144,6 +144,24 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["title", "description"],
         },
     },
+    "browser_evaluate": {
+        "description": (
+            "Launch the built project in a headless browser and systematically "
+            "evaluate it. Discovers routes, clicks every button, fills forms, "
+            "presses keyboard shortcuts, monitors console errors, detects "
+            "keybinding conflicts, and reports network failures. Returns an "
+            "objective health report. Call this BEFORE self_evaluate."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "interaction_depth": {"type": "integer"},
+                "check_keybindings": {"type": "boolean"},
+                "check_responsive": {"type": "boolean"},
+            },
+        },
+    },
 }
 
 
@@ -459,6 +477,67 @@ async def tool_smoke_test(
                 {"type": "text", "text": f"Smoke test failed: {e}"}
             ]
         }
+
+
+async def tool_browser_evaluate(
+    project_dir: str,
+    args: dict[str, Any],
+    default_port: int = 3000,
+) -> dict[str, Any]:
+    """Launch browser evaluation of the running application."""
+    from .browser_eval import run_browser_eval
+    from .server import ensure_server
+
+    port = default_port
+    url = args.get("url", f"http://localhost:{port}")
+
+    handle = await ensure_server(project_dir, port)
+
+    try:
+        report = await run_browser_eval(
+            url=url,
+            interaction_depth=args.get("interaction_depth", 2),
+            check_keybindings=args.get("check_keybindings", True),
+            check_responsive=args.get("check_responsive", False),
+            screenshot_dir=str(Path(project_dir) / ".iclaw" / "browser-eval" / "screenshots"),
+        )
+    finally:
+        if handle:
+            await handle.stop()
+
+    # Write report
+    report_dir = Path(project_dir) / ".iclaw" / "browser-eval"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "latest.md").write_text(report.to_markdown())
+
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps({
+                    "health_score": report.health_score,
+                    "console_errors": len(report.console_errors),
+                    "keybinding_conflicts": len(report.keybinding_conflicts),
+                    "network_errors": len(report.network_errors),
+                    "broken_interactions": len(report.broken_interactions),
+                    "routes_discovered": len(report.routes_discovered),
+                    "total_interactions": report.total_interactions,
+                    "findings_summary": report.findings_summary,
+                    "report_path": str(report_dir / "latest.md"),
+                    "conflict_details": [
+                        {
+                            "key": c.key,
+                            "event": c.event_type,
+                            "severity": c.severity,
+                            "handlers": len(c.handlers),
+                        }
+                        for c in report.keybinding_conflicts
+                    ],
+                    "error_samples": report.console_errors[:10],
+                }),
+            }
+        ]
+    }
 
 
 async def tool_propose_idea(

@@ -15,8 +15,8 @@ from inductiveclaw.backends.tool_executor import ToolExecutor, get_all_tool_sche
 class TestGetAllToolSchemas:
     def test_returns_both_iclaw_and_builtin(self):
         schemas = get_all_tool_schemas()
-        # 6 iclaw tools + 5 builtins
-        assert len(schemas) == 11
+        # 7 iclaw tools + 5 builtins
+        assert len(schemas) == 12
 
     def test_iclaw_tools_present(self):
         schemas = get_all_tool_schemas()
