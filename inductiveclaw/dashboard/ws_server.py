@@ -161,26 +161,30 @@ class DashboardServer:
 
     @staticmethod
     def _http_handler(html: str) -> Any:
-        """Return a process_request handler that serves HTML for non-WS requests."""
-        from http import HTTPStatus
-        try:
-            from websockets.http11 import Response  # type: ignore[import-untyped]
-        except ImportError:
-            Response = None
+        """Return a process_request handler that serves HTML for non-WS requests.
 
-        def handler(path: str, request: Any) -> Any:
-            """Serve the dashboard HTML on GET /."""
-            # For websockets 12+, return a Response to short-circuit the WS upgrade
-            if Response is not None:
-                return Response(
-                    HTTPStatus.OK,
-                    "OK",
-                    {
-                        "Content-Type": "text/html; charset=utf-8",
-                        "Cache-Control": "no-cache",
-                    },
-                    html.encode("utf-8"),
-                )
-            return None
+        For websockets 13+, the handler receives (connection, request) and
+        must return None to proceed with the WS handshake, or a Response
+        to short-circuit with an HTTP response.
+        """
+        from websockets.datastructures import Headers  # type: ignore[import-untyped]
+        from websockets.http11 import Response  # type: ignore[import-untyped]
+
+        html_bytes = html.encode("utf-8")
+        response_headers = Headers({
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Content-Length": str(len(html_bytes)),
+        })
+
+        def handler(connection: Any, request: Any) -> Any:
+            # If the request has an Upgrade header, it's a WS handshake — let it through
+            try:
+                if request.headers.get("Upgrade", "").lower() == "websocket":
+                    return None
+            except Exception:
+                pass
+            # Otherwise serve the HTML page
+            return Response(200, "OK", response_headers, html_bytes)
 
         return handler
